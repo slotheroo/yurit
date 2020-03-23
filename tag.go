@@ -12,7 +12,7 @@
 // 	}
 // 	log.Print(m.Format()) // The detected format.
 // 	log.Print(m.Title())  // The title of the track (see Metadata interface for more details).
-package tag
+package yurit
 
 import (
 	"errors"

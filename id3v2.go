@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-package tag
+package yurit
 
 import (
 	"fmt"
@@ -42,18 +42,19 @@ var id3v2Genres = [...]string{
 	"Synthpop",
 }
 
-// id3v2Header is a type which represents an ID3v2 tag header.
-type id3v2Header struct {
+// ID3v2Header is a type which represents an ID3v2 tag header.
+type ID3v2Header struct {
 	Version           Format
 	Unsynchronisation bool
 	ExtendedHeader    bool
 	Experimental      bool
+	Footer            bool
 	Size              uint
 }
 
 // readID3v2Header reads the ID3v2 header from the given io.Reader.
 // offset it number of bytes of header that was read
-func readID3v2Header(r io.Reader) (h *id3v2Header, offset uint, err error) {
+func readID3v2Header(r io.Reader) (h *ID3v2Header, offset uint, err error) {
 	offset = 10
 	b, err := readBytes(r, offset)
 	if err != nil {
@@ -80,11 +81,12 @@ func readID3v2Header(r io.Reader) (h *id3v2Header, offset uint, err error) {
 	}
 
 	// NB: We ignore b[1] (the revision) as we don't currently rely on it.
-	h = &id3v2Header{
+	h = &ID3v2Header{
 		Version:           vers,
 		Unsynchronisation: getBit(b[2], 7),
 		ExtendedHeader:    getBit(b[2], 6),
 		Experimental:      getBit(b[2], 5),
+		Footer:            getBit(b[2], 4),
 		Size:              uint(get7BitChunkedInt(b[3:7])),
 	}
 
@@ -219,7 +221,7 @@ func readID3v2_4FrameHeader(r io.Reader) (name string, size uint, headerSize uin
 }
 
 // readID3v2Frames reads ID3v2 frames from the given reader using the ID3v2Header.
-func readID3v2Frames(r io.Reader, offset uint, h *id3v2Header) (map[string]interface{}, error) {
+func readID3v2Frames(r io.Reader, offset uint, h *ID3v2Header) (map[string]interface{}, error) {
 	result := make(map[string]interface{})
 
 	for offset < h.Size {

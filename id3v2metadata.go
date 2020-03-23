@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-package tag
+package yurit
 
 import (
 	"strconv"
@@ -48,7 +48,7 @@ var frames = frameNames(map[string][2]string{
 
 // metadataID3v2 is the implementation of Metadata used for ID3v2 tags.
 type metadataID3v2 struct {
-	header *id3v2Header
+	header *ID3v2Header
 	frames map[string]interface{}
 }
 

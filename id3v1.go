@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-package tag
+package yurit
 
 import (
 	"errors"
@@ -42,7 +42,7 @@ var ErrNotID3v1 = errors.New("invalid ID3v1 header")
 
 // ReadID3v1Tags reads ID3v1 tags from the io.ReadSeeker.  Returns ErrNotID3v1
 // if there are no ID3v1 tags, otherwise non-nil error if there was a problem.
-func ReadID3v1Tags(r io.ReadSeeker) (Metadata, error) {
+func ReadID3v1Tags(r io.ReadSeeker) (MetadataID3v1, error) {
 	_, err := r.Seek(-128, io.SeekEnd)
 	if err != nil {
 		return nil, err
@@ -106,26 +106,26 @@ func ReadID3v1Tags(r io.ReadSeeker) (Metadata, error) {
 	m["track"] = track
 	m["genre"] = genre
 
-	return metadataID3v1(m), nil
+	return MetadataID3v1(m), nil
 }
 
 func trimString(x string) string {
 	return strings.TrimSpace(strings.Trim(x, "\x00"))
 }
 
-// metadataID3v1 is the implementation of Metadata used for ID3v1 tags.
-type metadataID3v1 map[string]interface{}
+// MetadataID3v1 is the implementation of Metadata used for ID3v1 tags.
+type MetadataID3v1 map[string]interface{}
 
-func (metadataID3v1) Format() Format                { return ID3v1 }
-func (metadataID3v1) FileType() FileType            { return MP3 }
-func (m metadataID3v1) Raw() map[string]interface{} { return m }
+func (MetadataID3v1) Format() Format                { return ID3v1 }
+func (MetadataID3v1) FileType() FileType            { return MP3 }
+func (m MetadataID3v1) Raw() map[string]interface{} { return m }
 
-func (m metadataID3v1) Title() string  { return m["title"].(string) }
-func (m metadataID3v1) Album() string  { return m["album"].(string) }
-func (m metadataID3v1) Artist() string { return m["artist"].(string) }
-func (m metadataID3v1) Genre() string  { return m["genre"].(string) }
+func (m MetadataID3v1) Title() string  { return m["title"].(string) }
+func (m MetadataID3v1) Album() string  { return m["album"].(string) }
+func (m MetadataID3v1) Artist() string { return m["artist"].(string) }
+func (m MetadataID3v1) Genre() string  { return m["genre"].(string) }
 
-func (m metadataID3v1) Year() int {
+func (m MetadataID3v1) Year() int {
 	y := m["year"].(string)
 	n, err := strconv.Atoi(y)
 	if err != nil {
@@ -134,11 +134,11 @@ func (m metadataID3v1) Year() int {
 	return n
 }
 
-func (m metadataID3v1) Track() (int, int) { return m["track"].(int), 0 }
+func (m MetadataID3v1) Track() (int, int) { return m["track"].(int), 0 }
 
-func (m metadataID3v1) AlbumArtist() string { return "" }
-func (m metadataID3v1) Composer() string    { return "" }
-func (metadataID3v1) Disc() (int, int)      { return 0, 0 }
-func (m metadataID3v1) Picture() *Picture   { return nil }
-func (m metadataID3v1) Lyrics() string      { return "" }
-func (m metadataID3v1) Comment() string     { return m["comment"].(string) }
+func (m MetadataID3v1) AlbumArtist() string { return "" }
+func (m MetadataID3v1) Composer() string    { return "" }
+func (MetadataID3v1) Disc() (int, int)      { return 0, 0 }
+func (m MetadataID3v1) Picture() *Picture   { return nil }
+func (m MetadataID3v1) Lyrics() string      { return "" }
+func (m MetadataID3v1) Comment() string     { return m["comment"].(string) }
