@@ -6,6 +6,7 @@ package yurit
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"io"
 )
@@ -15,39 +16,147 @@ const (
 	commentType int = 3
 )
 
+type OGGMetadata struct {
+	VorbisIDHeader VorbisIDHeader
+	VorbisComment  VorbisComment
+	TotalGranules  int64
+}
+
+type VorbisIDHeader struct {
+	Version        int
+	Channels       int
+	SampleRate     int //hertz
+	BitrateMax     int
+	BitrateNominal int
+	BitrateMin     int
+	BlockSize0     int
+	BlockSize1     int
+}
+
+func (m *OGGMetadata) readVorbisIDHeader(r io.ReadSeeker) error {
+	version, err := readUint32LittleEndian(r)
+	if err != nil {
+		return err
+	}
+	channels, err := readUint(r, 1)
+	if err != nil {
+		return err
+	}
+	sampleRate, err := readUint32LittleEndian(r)
+	if err != nil {
+		return err
+	}
+	bitrateMax, err := readSignedInt32LittleEndian(r)
+	if err != nil {
+		return err
+	}
+	bitrateNom, err := readSignedInt32LittleEndian(r)
+	if err != nil {
+		return err
+	}
+	bitrateMin, err := readSignedInt32LittleEndian(r)
+	if err != nil {
+		return err
+	}
+	blockSizeByte, err := readBytes(r, 1)
+	if err != nil {
+		return err
+	}
+	//Use bits 0-3 to make a uint and use that as an exponent of 2
+	blockSize0 := 1 << binary.LittleEndian.Uint16([]byte{blockSizeByte[0] & 0x0F, 0})
+	//Use bits 4-7 to make a uint and use that as an exponent of 2
+	blockSize1 := 1 << binary.LittleEndian.Uint16([]byte{blockSizeByte[0] >> 4, 0})
+	//Skip the framing flag
+	_, err = r.Seek(1, io.SeekCurrent)
+	if err != nil {
+		return err
+	}
+	m.VorbisIDHeader = VorbisIDHeader{
+		Version:        int(version),
+		Channels:       int(channels),
+		SampleRate:     int(sampleRate),
+		BitrateMax:     int(bitrateMax),
+		BitrateNominal: int(bitrateNom),
+		BitrateMin:     int(bitrateMin),
+		BlockSize0:     blockSize0,
+		BlockSize1:     blockSize1,
+	}
+	return nil
+}
+
+func (m *OGGMetadata) readVorbisComment(r io.Reader) error {
+	comment, err := ReadVorbisComment(r)
+	if err != nil {
+		return err
+	}
+	m.VorbisComment = *comment
+	return nil
+}
+
+func (m *OGGMetadata) getTotalGranules(r io.ReadSeeker) error {
+	var err error
+	_, err = r.Seek(-14, io.SeekEnd)
+	if err != nil {
+		return err
+	}
+	//Start looking backwards for page header capture pattern
+	for {
+		b, err := readBytes(r, 4)
+		if err != nil {
+			return err
+		}
+		if string(b) == "OggS" {
+			break
+		} else if string(b[:3]) == "ggS" {
+			_, err = r.Seek(-5, io.SeekCurrent)
+		} else if string(b[:2]) == "gS" {
+			_, err = r.Seek(-6, io.SeekCurrent)
+		} else if b[0] == 'S' {
+			_, err = r.Seek(-7, io.SeekCurrent)
+		} else {
+			_, err = r.Seek(-8, io.SeekCurrent)
+		}
+		if err != nil {
+			return err
+		}
+	}
+	//Skip version byte
+	_, err = r.Seek(1, io.SeekCurrent)
+	if err != nil {
+		return err
+	}
+	//Read and check header_type_flag
+	headerTypeFlag, err := readBytes(r, 1)
+	if err != nil {
+		return err
+	}
+	if headerTypeFlag[0]&0x04 != 0x04 {
+		return errors.New("Last page found is not marked as final page")
+	}
+	//Read final absolute granule position
+	absoluteGranulePositionUnsigned, err := readUint64LittleEndian(r)
+	if err != nil {
+		return err
+	}
+	m.TotalGranules = int64(absoluteGranulePositionUnsigned)
+	return nil
+}
+
 // ReadOGGTags reads OGG metadata from the io.ReadSeeker, returning the resulting
 // metadata in a Metadata implementation, or non-nil error if there was a problem.
 // See http://www.xiph.org/vorbis/doc/Vorbis_I_spec.html
 // and http://www.xiph.org/ogg/doc/framing.html for details.
-func ReadOGGTags(r io.ReadSeeker) (Metadata, error) {
-	oggs, err := readString(r, 4)
-	if err != nil {
-		return nil, err
-	}
-	if oggs != "OggS" {
-		return nil, errors.New("expected 'OggS'")
-	}
+func ReadOGGTags(r io.ReadSeeker) (*OGGMetadata, error) {
+	m := &OGGMetadata{}
 
-	// Skip 22 bytes of Page header to read page_segments length byte at position 26
-	// See http://www.xiph.org/ogg/doc/framing.html
-	_, err = r.Seek(22, io.SeekCurrent)
+	ih, err := readPackets(r)
 	if err != nil {
 		return nil, err
 	}
-
-	nS, err := readInt(r, 1)
-	if err != nil {
-		return nil, err
-	}
-
-	// Seek and discard the segments
-	_, err = r.Seek(int64(nS), io.SeekCurrent)
-	if err != nil {
-		return nil, err
-	}
+	ihr := bytes.NewReader(ih)
 
 	// First packet type is identification, type 1
-	t, err := readInt(r, 1)
+	t, err := readInt(ihr, 1)
 	if err != nil {
 		return nil, err
 	}
@@ -55,9 +164,13 @@ func ReadOGGTags(r io.ReadSeeker) (Metadata, error) {
 		return nil, errors.New("expected 'vorbis' identification type 1")
 	}
 
-	// Seek and discard 29 bytes from common and identification header
-	// See http://www.xiph.org/vorbis/doc/Vorbis_I_spec.html#x1-610004.2
-	_, err = r.Seek(29, io.SeekCurrent)
+	// Seek and discard 6 bytes from common header
+	_, err = ihr.Seek(6, io.SeekCurrent)
+	if err != nil {
+		return nil, err
+	}
+
+	err = m.readVorbisIDHeader(ihr)
 	if err != nil {
 		return nil, err
 	}
@@ -86,11 +199,12 @@ func ReadOGGTags(r io.ReadSeeker) (Metadata, error) {
 		return nil, err
 	}
 
-	m := &metadataOGG{
-		newMetadataVorbis(),
+	err = m.readVorbisComment(chr)
+	if err != nil {
+		return nil, err
 	}
 
-	err = m.readVorbisComment(chr)
+	err = m.getTotalGranules(r)
 	return m, err
 }
 
@@ -156,12 +270,4 @@ func readPackets(r io.ReadSeeker) ([]byte, error) {
 	}
 
 	return buf.Bytes(), nil
-}
-
-type metadataOGG struct {
-	*metadataVorbis
-}
-
-func (m *metadataOGG) FileType() FileType {
-	return OGG
 }

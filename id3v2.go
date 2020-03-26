@@ -12,6 +12,43 @@ import (
 	"strings"
 )
 
+type ID3v2Tags struct {
+	Header ID3v2Header
+	Frames map[string]interface{}
+}
+
+func ReadID3v2Tags(r io.ReadSeeker) (*ID3v2Tags, error) {
+	b, err := readBytes(r, 3)
+	if err != nil {
+		return nil, err
+	}
+	//No ID3v2 tags, return nil
+	if string(b) != "ID3" {
+		return nil, nil
+	}
+	_, err = r.Seek(0, io.SeekStart)
+	if err != nil {
+		return nil, err
+	}
+	h, offset, err := readID3v2Header(r)
+	if err != nil {
+		return nil, err
+	}
+
+	var ur io.Reader = r
+	if h.Unsynchronisation {
+		ur = &unsynchroniser{Reader: r}
+	}
+
+	f, err := readID3v2Frames(ur, offset, h)
+	if err != nil {
+		return nil, err
+	}
+
+	i := ID3v2Tags{Header: *h, Frames: f}
+	return &i, nil
+}
+
 var id3v2Genres = [...]string{
 	"Blues", "Classic Rock", "Country", "Dance", "Disco", "Funk", "Grunge",
 	"Hip-Hop", "Jazz", "Metal", "New Age", "Oldies", "Other", "Pop", "R&B",
@@ -390,26 +427,6 @@ func (r *unsynchroniser) Read(p []byte) (int, error) {
 	return i, nil
 }
 
-// ReadID3v2Tags parses ID3v2.{2,3,4} tags from the io.ReadSeeker into a Metadata, returning
-// non-nil error on failure.
-func ReadID3v2Tags(r io.ReadSeeker) (Metadata, error) {
-	h, offset, err := readID3v2Header(r)
-	if err != nil {
-		return nil, err
-	}
-
-	var ur io.Reader = r
-	if h.Unsynchronisation {
-		ur = &unsynchroniser{Reader: r}
-	}
-
-	f, err := readID3v2Frames(ur, offset, h)
-	if err != nil {
-		return nil, err
-	}
-	return metadataID3v2{header: h, frames: f}, nil
-}
-
 var id3v2genreRe = regexp.MustCompile(`(.*[^(]|.* |^)\(([0-9]+)\) *(.*)$`)
 
 //  id3v2genre parse a id3v2 genre tag and expand the numeric genres
@@ -433,4 +450,128 @@ func id3v2genre(genre string) string {
 		c = (orig != genre)
 	}
 	return strings.Replace(genre, "((", "(", -1)
+}
+
+type frameNames map[string][2]string
+
+func (f frameNames) Name(s string, fm Format) string {
+	l, ok := f[s]
+	if !ok {
+		return ""
+	}
+
+	switch fm {
+	case ID3v2_2:
+		return l[0]
+	case ID3v2_3:
+		return l[1]
+	case ID3v2_4:
+		if s == "year" {
+			return "TDRC"
+		}
+		return l[1]
+	}
+	return ""
+}
+
+var frames = frameNames(map[string][2]string{
+	"title":        [2]string{"TT2", "TIT2"},
+	"artist":       [2]string{"TP1", "TPE1"},
+	"album":        [2]string{"TAL", "TALB"},
+	"album_artist": [2]string{"TP2", "TPE2"},
+	"composer":     [2]string{"TCM", "TCOM"},
+	"year":         [2]string{"TYE", "TYER"},
+	"track":        [2]string{"TRK", "TRCK"},
+	"disc":         [2]string{"TPA", "TPOS"},
+	"genre":        [2]string{"TCO", "TCON"},
+	"picture":      [2]string{"PIC", "APIC"},
+	"lyrics":       [2]string{"", "USLT"},
+	"comment":      [2]string{"COM", "COMM"},
+})
+
+func (m ID3v2Tags) getString(k string) string {
+	v, ok := m.Frames[k]
+	if !ok {
+		return ""
+	}
+	return v.(string)
+}
+
+func (m ID3v2Tags) Format() Format              { return m.Header.Version }
+func (m ID3v2Tags) Raw() map[string]interface{} { return m.Frames }
+
+func (m ID3v2Tags) Title() string {
+	return m.getString(frames.Name("title", m.Format()))
+}
+
+func (m ID3v2Tags) Artist() string {
+	return m.getString(frames.Name("artist", m.Format()))
+}
+
+func (m ID3v2Tags) Album() string {
+	return m.getString(frames.Name("album", m.Format()))
+}
+
+func (m ID3v2Tags) AlbumArtist() string {
+	return m.getString(frames.Name("album_artist", m.Format()))
+}
+
+func (m ID3v2Tags) Composer() string {
+	return m.getString(frames.Name("composer", m.Format()))
+}
+
+func (m ID3v2Tags) Genre() string {
+	return id3v2genre(m.getString(frames.Name("genre", m.Format())))
+}
+
+func (m ID3v2Tags) Year() int {
+	year, _ := strconv.Atoi(m.getString(frames.Name("year", m.Format())))
+	return year
+}
+
+func parseXofN(s string) (x, n int) {
+	xn := strings.Split(s, "/")
+	if len(xn) != 2 {
+		x, _ = strconv.Atoi(s)
+		return x, 0
+	}
+	x, _ = strconv.Atoi(strings.TrimSpace(xn[0]))
+	n, _ = strconv.Atoi(strings.TrimSpace(xn[1]))
+	return x, n
+}
+
+func (m ID3v2Tags) Track() (int, int) {
+	return parseXofN(m.getString(frames.Name("track", m.Format())))
+}
+
+func (m ID3v2Tags) Disc() (int, int) {
+	return parseXofN(m.getString(frames.Name("disc", m.Format())))
+}
+
+func (m ID3v2Tags) Lyrics() string {
+	t, ok := m.Frames[frames.Name("lyrics", m.Format())]
+	if !ok {
+		return ""
+	}
+	return t.(*Comm).Text
+}
+
+func (m ID3v2Tags) Comment() string {
+	t, ok := m.Frames[frames.Name("comment", m.Format())]
+	if !ok {
+		return ""
+	}
+	// id3v23 has Text, id3v24 has Description
+	if t.(*Comm).Description == "" {
+		return trimString(t.(*Comm).Text)
+	}
+	return trimString(t.(*Comm).Description)
+}
+
+func (m ID3v2Tags) Picture() *Picture {
+	v, ok := m.Frames[frames.Name("picture", m.Format())]
+	if !ok {
+		return nil
+	}
+	return v.(*Picture)
 }

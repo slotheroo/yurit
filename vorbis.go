@@ -6,14 +6,13 @@ package yurit
 
 import (
 	"errors"
-	"fmt"
 	"io"
 	"strconv"
 	"strings"
 	"time"
 )
 
-func newMetadataVorbis() *metadataVorbis {
+/*func newMetadataVorbis() *metadataVorbis {
 	return &metadataVorbis{
 		c: make(map[string]string),
 	}
@@ -22,116 +21,46 @@ func newMetadataVorbis() *metadataVorbis {
 type metadataVorbis struct {
 	c map[string]string // the vorbis comments
 	p *Picture
+}*/
+
+type VorbisComment struct {
+	Fields map[string]string
 }
 
-func (m *metadataVorbis) readVorbisComment(r io.Reader) error {
+func ReadVorbisComment(r io.Reader) (*VorbisComment, error) {
+	var m = VorbisComment{Fields: make(map[string]string)}
 	vendorLen, err := readUint32LittleEndian(r)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	vendor, err := readString(r, uint(vendorLen))
 	if err != nil {
-		return err
+		return nil, err
 	}
-	m.c["vendor"] = vendor
+	m.Fields["vendor"] = vendor
 
 	commentsLen, err := readUint32LittleEndian(r)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	for i := uint32(0); i < commentsLen; i++ {
 		l, err := readUint32LittleEndian(r)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		s, err := readString(r, uint(l))
 		if err != nil {
-			return err
+			return nil, err
 		}
 		k, v, err := parseComment(s)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		m.c[strings.ToLower(k)] = v
+		m.Fields[strings.ToLower(k)] = v
 	}
-	return nil
-}
-
-func (m *metadataVorbis) readPictureBlock(r io.Reader) error {
-	b, err := readInt(r, 4)
-	if err != nil {
-		return err
-	}
-	pictureType, ok := pictureTypes[byte(b)]
-	if !ok {
-		return fmt.Errorf("invalid picture type: %v", b)
-	}
-	mimeLen, err := readUint(r, 4)
-	if err != nil {
-		return err
-	}
-	mime, err := readString(r, mimeLen)
-	if err != nil {
-		return err
-	}
-
-	ext := ""
-	switch mime {
-	case "image/jpeg":
-		ext = "jpg"
-	case "image/png":
-		ext = "png"
-	case "image/gif":
-		ext = "gif"
-	}
-
-	descLen, err := readUint(r, 4)
-	if err != nil {
-		return err
-	}
-	desc, err := readString(r, descLen)
-	if err != nil {
-		return err
-	}
-
-	// We skip width <32>, height <32>, colorDepth <32>, coloresUsed <32>
-	_, err = readInt(r, 4) // width
-	if err != nil {
-		return err
-	}
-	_, err = readInt(r, 4) // height
-	if err != nil {
-		return err
-	}
-	_, err = readInt(r, 4) // color depth
-	if err != nil {
-		return err
-	}
-	_, err = readInt(r, 4) // colors used
-	if err != nil {
-		return err
-	}
-
-	dataLen, err := readInt(r, 4)
-	if err != nil {
-		return err
-	}
-	data := make([]byte, dataLen)
-	_, err = io.ReadFull(r, data)
-	if err != nil {
-		return err
-	}
-
-	m.p = &Picture{
-		Ext:         ext,
-		MIMEType:    mime,
-		Type:        pictureType,
-		Description: desc,
-		Data:        data,
-	}
-	return nil
+	return &m, nil
 }
 
 func parseComment(c string) (k, v string, err error) {
@@ -145,68 +74,68 @@ func parseComment(c string) (k, v string, err error) {
 	return
 }
 
-func (m *metadataVorbis) Format() Format {
+func (m *VorbisComment) Format() Format {
 	return VORBIS
 }
 
-func (m *metadataVorbis) Raw() map[string]interface{} {
-	raw := make(map[string]interface{}, len(m.c))
-	for k, v := range m.c {
+/*func (m *VorbisComment) Raw() map[string]interface{} {
+	raw := make(map[string]interface{}, len(m.Fields))
+	for k, v := range m.Fields {
 		raw[k] = v
 	}
 	return raw
+}*/
+
+func (m *VorbisComment) Title() string {
+	return m.Fields["title"]
 }
 
-func (m *metadataVorbis) Title() string {
-	return m.c["title"]
-}
-
-func (m *metadataVorbis) Artist() string {
+func (m *VorbisComment) Artist() string {
 	// PERFORMER
 	// The artist(s) who performed the work. In classical music this would be the
 	// conductor, orchestra, soloists. In an audio book it would be the actor who
 	// did the reading. In popular music this is typically the same as the ARTIST
 	// and is omitted.
-	if m.c["performer"] != "" {
-		return m.c["performer"]
+	if m.Fields["performer"] != "" {
+		return m.Fields["performer"]
 	}
-	return m.c["artist"]
+	return m.Fields["artist"]
 }
 
-func (m *metadataVorbis) Album() string {
-	return m.c["album"]
+func (m *VorbisComment) Album() string {
+	return m.Fields["album"]
 }
 
-func (m *metadataVorbis) AlbumArtist() string {
+func (m *VorbisComment) AlbumArtist() string {
 	// This field isn't actually included in the standard, though
 	// it is commonly assigned to albumartist.
-	return m.c["albumartist"]
+	return m.Fields["albumartist"]
 }
 
-func (m *metadataVorbis) Composer() string {
+func (m *VorbisComment) Composer() string {
 	// ARTIST
 	// The artist generally considered responsible for the work. In popular music
 	// this is usually the performing band or singer. For classical music it would
 	// be the composer. For an audio book it would be the author of the original text.
-	if m.c["composer"] != "" {
-		return m.c["composer"]
+	if m.Fields["composer"] != "" {
+		return m.Fields["composer"]
 	}
-	if m.c["performer"] == "" {
+	if m.Fields["performer"] == "" {
 		return ""
 	}
-	return m.c["artist"]
+	return m.Fields["artist"]
 }
 
-func (m *metadataVorbis) Genre() string {
-	return m.c["genre"]
+func (m *VorbisComment) Genre() string {
+	return m.Fields["genre"]
 }
 
-func (m *metadataVorbis) Year() int {
+func (m *VorbisComment) Year() int {
 	var dateFormat string
 
 	// The date need to follow the international standard https://en.wikipedia.org/wiki/ISO_8601
 	// and obviously the VorbisComment standard https://wiki.xiph.org/VorbisComment#Date_and_time
-	switch len(m.c["date"]) {
+	switch len(m.Fields["date"]) {
 	case 0:
 		return 0
 	case 4:
@@ -217,35 +146,31 @@ func (m *metadataVorbis) Year() int {
 		dateFormat = "2006-01-02"
 	}
 
-	t, _ := time.Parse(dateFormat, m.c["date"])
+	t, _ := time.Parse(dateFormat, m.Fields["date"])
 	return t.Year()
 }
 
-func (m *metadataVorbis) Track() (int, int) {
-	x, _ := strconv.Atoi(m.c["tracknumber"])
+func (m *VorbisComment) Track() (int, int) {
+	x, _ := strconv.Atoi(m.Fields["tracknumber"])
 	// https://wiki.xiph.org/Field_names
-	n, _ := strconv.Atoi(m.c["tracktotal"])
+	n, _ := strconv.Atoi(m.Fields["tracktotal"])
 	return x, n
 }
 
-func (m *metadataVorbis) Disc() (int, int) {
+func (m *VorbisComment) Disc() (int, int) {
 	// https://wiki.xiph.org/Field_names
-	x, _ := strconv.Atoi(m.c["discnumber"])
-	n, _ := strconv.Atoi(m.c["disctotal"])
+	x, _ := strconv.Atoi(m.Fields["discnumber"])
+	n, _ := strconv.Atoi(m.Fields["disctotal"])
 	return x, n
 }
 
-func (m *metadataVorbis) Lyrics() string {
-	return m.c["lyrics"]
+func (m *VorbisComment) Lyrics() string {
+	return m.Fields["lyrics"]
 }
 
-func (m *metadataVorbis) Comment() string {
-	if m.c["comment"] != "" {
-		return m.c["comment"]
+func (m *VorbisComment) Comment() string {
+	if m.Fields["comment"] != "" {
+		return m.Fields["comment"]
 	}
-	return m.c["description"]
-}
-
-func (m *metadataVorbis) Picture() *Picture {
-	return m.p
+	return m.Fields["description"]
 }

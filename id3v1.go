@@ -11,6 +11,10 @@ import (
 	"strings"
 )
 
+type ID3v1Tags struct {
+	Frames map[string]interface{}
+}
+
 // id3v1Genres is a list of genres as given in the ID3v1 specification.
 var id3v1Genres = [...]string{
 	"Blues", "Classic Rock", "Country", "Dance", "Disco", "Funk", "Grunge",
@@ -42,7 +46,7 @@ var ErrNotID3v1 = errors.New("invalid ID3v1 header")
 
 // ReadID3v1Tags reads ID3v1 tags from the io.ReadSeeker.  Returns ErrNotID3v1
 // if there are no ID3v1 tags, otherwise non-nil error if there was a problem.
-func ReadID3v1Tags(r io.ReadSeeker) (MetadataID3v1, error) {
+func ReadID3v1Tags(r io.ReadSeeker) (*ID3v1Tags, error) {
 	_, err := r.Seek(-128, io.SeekEnd)
 	if err != nil {
 		return nil, err
@@ -97,36 +101,33 @@ func ReadID3v1Tags(r io.ReadSeeker) (MetadataID3v1, error) {
 		genre = id3v1Genres[int(genreID[0])]
 	}
 
-	m := make(map[string]interface{})
-	m["title"] = trimString(title)
-	m["artist"] = trimString(artist)
-	m["album"] = trimString(album)
-	m["year"] = trimString(year)
-	m["comment"] = trimString(comment)
-	m["track"] = track
-	m["genre"] = genre
+	f := make(map[string]interface{})
+	f["title"] = trimString(title)
+	f["artist"] = trimString(artist)
+	f["album"] = trimString(album)
+	f["year"] = trimString(year)
+	f["comment"] = trimString(comment)
+	f["track"] = track
+	f["genre"] = genre
 
-	return MetadataID3v1(m), nil
+	m := ID3v1Tags{Frames: f}
+	return &m, nil
 }
 
 func trimString(x string) string {
 	return strings.TrimSpace(strings.Trim(x, "\x00"))
 }
 
-// MetadataID3v1 is the implementation of Metadata used for ID3v1 tags.
-type MetadataID3v1 map[string]interface{}
+func (ID3v1Tags) Format() Format                { return ID3v1 }
+func (m ID3v1Tags) Raw() map[string]interface{} { return m.Frames }
 
-func (MetadataID3v1) Format() Format                { return ID3v1 }
-func (MetadataID3v1) FileType() FileType            { return MP3 }
-func (m MetadataID3v1) Raw() map[string]interface{} { return m }
+func (m ID3v1Tags) Title() string  { return m.Frames["title"].(string) }
+func (m ID3v1Tags) Album() string  { return m.Frames["album"].(string) }
+func (m ID3v1Tags) Artist() string { return m.Frames["artist"].(string) }
+func (m ID3v1Tags) Genre() string  { return m.Frames["genre"].(string) }
 
-func (m MetadataID3v1) Title() string  { return m["title"].(string) }
-func (m MetadataID3v1) Album() string  { return m["album"].(string) }
-func (m MetadataID3v1) Artist() string { return m["artist"].(string) }
-func (m MetadataID3v1) Genre() string  { return m["genre"].(string) }
-
-func (m MetadataID3v1) Year() int {
-	y := m["year"].(string)
+func (m ID3v1Tags) Year() int {
+	y := m.Frames["year"].(string)
 	n, err := strconv.Atoi(y)
 	if err != nil {
 		return 0
@@ -134,11 +135,11 @@ func (m MetadataID3v1) Year() int {
 	return n
 }
 
-func (m MetadataID3v1) Track() (int, int) { return m["track"].(int), 0 }
+func (m ID3v1Tags) Track() (int, int) { return m.Frames["track"].(int), 0 }
 
-func (m MetadataID3v1) AlbumArtist() string { return "" }
-func (m MetadataID3v1) Composer() string    { return "" }
-func (MetadataID3v1) Disc() (int, int)      { return 0, 0 }
-func (m MetadataID3v1) Picture() *Picture   { return nil }
-func (m MetadataID3v1) Lyrics() string      { return "" }
-func (m MetadataID3v1) Comment() string     { return m["comment"].(string) }
+/*func (m ID3v1Tags) AlbumArtist() string { return "" }
+func (m ID3v1Tags) Composer() string    { return "" }
+func (ID3v1Tags) Disc() (int, int)      { return 0, 0 }
+func (m ID3v1Tags) Picture() *Picture   { return nil }
+func (m ID3v1Tags) Lyrics() string      { return "" }*/
+func (m ID3v1Tags) Comment() string { return m.Frames["comment"].(string) }

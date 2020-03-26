@@ -1,10 +1,6 @@
 package yurit
 
-import (
-	"fmt"
-	"io"
-)
-
+/*
 // Identify identifies the format and file type of the data in the ReadSeeker.
 func Identify(r io.ReadSeeker) (format Format, fileType FileType, err error) {
 	b, err := readBytes(r, 11)
@@ -79,3 +75,4 @@ func Identify(r io.ReadSeeker) (format Format, fileType FileType, err error) {
 	}
 	return ID3v1, MP3, nil
 }
+*/

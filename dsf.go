@@ -4,11 +4,7 @@
 
 package yurit
 
-import (
-	"errors"
-	"io"
-)
-
+/*
 // ReadDSFTags reads DSF metadata from the io.ReadSeeker, returning the resulting
 // metadata in a Metadata implementation, or non-nil error if there was a problem.
 // samples: http://www.2l.no/hires/index.html
@@ -107,3 +103,4 @@ func (m metadataDSF) Comment() string {
 func (m metadataDSF) Raw() map[string]interface{} {
 	return m.id3.Raw()
 }
+*/

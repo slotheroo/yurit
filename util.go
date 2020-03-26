@@ -88,3 +88,12 @@ func readUint32LittleEndian(r io.Reader) (uint32, error) {
 	}
 	return binary.LittleEndian.Uint32(b), nil
 }
+
+//For reading signed int
+func readSignedInt32LittleEndian(r io.Reader) (int32, error) {
+	b, err := readBytes(r, 4)
+	if err != nil {
+		return 0, err
+	}
+	return int32(binary.LittleEndian.Uint32(b)), nil
+}
