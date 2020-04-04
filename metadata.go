@@ -80,5 +80,5 @@ type Metadata interface {
 
 	// Raw returns the raw mapping of retrieved tag names and associated values.
 	// NB: tag/atom names are not standardised between formats.
-	// Raw() map[string]interface{}
+	Raw() map[string]interface{}
 }

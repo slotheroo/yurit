@@ -8,115 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"time"
 )
-
-//MP3Metadata is a collection of metadata from an mp3 file including tags and
-//frame information.
-type FLACMetadata struct {
-	StreamInfo    StreamInfo
-	Pictures      []Picture
-	VorbisComment *VorbisComment
-}
-
-func (m FLACMetadata) FileType() FileType {
-	return FLAC
-}
-
-func (m FLACMetadata) Format() Format {
-	if m.VorbisComment != nil {
-		return m.VorbisComment.Format()
-	}
-	return UnknownFormat
-}
-
-func (m FLACMetadata) Title() string {
-	if m.VorbisComment != nil {
-		return m.VorbisComment.Title()
-	}
-	return ""
-}
-
-func (m FLACMetadata) Artist() string {
-	if m.VorbisComment != nil {
-		return m.VorbisComment.Artist()
-	}
-	return ""
-}
-
-func (m FLACMetadata) Album() string {
-	if m.VorbisComment != nil {
-		return m.VorbisComment.Album()
-	}
-	return ""
-}
-
-func (m FLACMetadata) AlbumArtist() string {
-	if m.VorbisComment != nil {
-		return m.VorbisComment.AlbumArtist()
-	}
-	return ""
-}
-
-func (m FLACMetadata) Composer() string {
-	if m.VorbisComment != nil {
-		return m.VorbisComment.Composer()
-	}
-	return ""
-}
-
-func (m FLACMetadata) Genre() string {
-	if m.VorbisComment != nil {
-		return m.VorbisComment.Genre()
-	}
-	return ""
-}
-
-func (m FLACMetadata) Year() int {
-	if m.VorbisComment != nil {
-		return m.VorbisComment.Year()
-	}
-	return 0
-}
-
-func (m FLACMetadata) Track() (int, int) {
-	if m.VorbisComment != nil {
-		return m.VorbisComment.Track()
-	}
-	return 0, 0
-}
-
-func (m FLACMetadata) Disc() (int, int) {
-	if m.VorbisComment != nil {
-		return m.VorbisComment.Disc()
-	}
-	return 0, 0
-}
-
-func (m FLACMetadata) Lyrics() string {
-	if m.VorbisComment != nil {
-		return m.VorbisComment.Lyrics()
-	}
-	return ""
-}
-
-func (m FLACMetadata) Comment() string {
-	if m.VorbisComment != nil {
-		return m.VorbisComment.Comment()
-	}
-	return ""
-}
-
-type StreamInfo struct {
-	MinBlockSize  int //Min block size in samples
-	MaxBlockSize  int //Max block size in samples
-	MinFrameSize  int //Min frame size in bytes
-	MaxFrameSize  int //Max frame size in bytes
-	SampleRate    int //Sample rate in hertz
-	Channels      int //Number of channels in the stream
-	SampleBitrate int //Bits per sample
-	TotalSamples  int //Total number of samples in the stream
-	MD5Signature  []byte
-}
 
 // blockType is a type which represents an enumeration of valid FLAC blocks
 type blockType byte
@@ -132,6 +25,15 @@ const (
 	pictureBlock       blockType = 6
 )
 
+//FLACMetadata is a collection of metadata and other useful data from a native
+//FLAC container with a Vorbis comment.
+type FLACMetadata struct {
+	fileType      FileType
+	streamInfo    StreamInfo
+	pictures      []Picture
+	vorbisComment *VorbisComment
+}
+
 // ReadFLACTags reads FLAC metadata from the io.ReadSeeker, returning the resulting
 // metadata in a Metadata implementation, or non-nil error if there was a problem.
 func ReadFLACTags(r io.ReadSeeker) (*FLACMetadata, error) {
@@ -139,11 +41,14 @@ func ReadFLACTags(r io.ReadSeeker) (*FLACMetadata, error) {
 	if err != nil {
 		return nil, err
 	}
+	//Verify that this is a FLAC file
 	if flac != "fLaC" {
 		return nil, errors.New("expected 'fLaC'")
 	}
 
-	m := &FLACMetadata{}
+	m := &FLACMetadata{
+		fileType: FLAC,
+	}
 	err = m.readFLACMetadataBlocks(r)
 	if err != nil {
 		return nil, err
@@ -151,6 +56,8 @@ func ReadFLACTags(r io.ReadSeeker) (*FLACMetadata, error) {
 	return m, nil
 }
 
+//readFLACMetadataBlocks iterates through a FLAC file's metadata blocks and reads
+//the ones that we are interested in.
 func (m *FLACMetadata) readFLACMetadataBlocks(r io.ReadSeeker) error {
 	var last = false
 	for !last {
@@ -167,7 +74,6 @@ func (m *FLACMetadata) readFLACMetadataBlocks(r io.ReadSeeker) error {
 		if err != nil {
 			return err
 		}
-		fmt.Println(blockHeader[0])
 
 		if blockType(blockHeader[0]) == streamInfoBlock {
 			err = m.readStreamInfoBlock(r)
@@ -185,32 +91,39 @@ func (m *FLACMetadata) readFLACMetadataBlocks(r io.ReadSeeker) error {
 	return nil
 }
 
+//readStreamInfoBlock reads the STREAMINFO block from a FLAC file
+//https://xiph.org/flac/format.html#metadata_block_streaminfo
 func (m *FLACMetadata) readStreamInfoBlock(r io.Reader) error {
 	block, err := readBytes(r, 34)
 	if err != nil {
 		return err
 	}
-	m.StreamInfo.MinBlockSize = getInt(block[0:2])
-	m.StreamInfo.MaxBlockSize = getInt(block[2:4])
-	m.StreamInfo.MinFrameSize = getInt(block[4:7])
-	m.StreamInfo.MaxFrameSize = getInt(block[7:10])
-	m.StreamInfo.SampleRate = getInt(block[10:13]) >> 4
-	m.StreamInfo.Channels = ((getInt(block[12:13]) >> 1) & 0x07) + 1
-	m.StreamInfo.SampleBitrate = ((getInt(block[12:13]) & 0x01) << 4) + (getInt(block[13:14]) >> 4) + 1
-	m.StreamInfo.TotalSamples = getInt(append([]byte{block[13] & 0x0F}, block[14:18]...))
-	m.StreamInfo.MD5Signature = block[18:]
+	m.streamInfo.MinBlockSize = getInt(block[0:2])
+	m.streamInfo.MaxBlockSize = getInt(block[2:4])
+	m.streamInfo.MinFrameSize = getInt(block[4:7])
+	m.streamInfo.MaxFrameSize = getInt(block[7:10])
+	m.streamInfo.SampleRate = getInt(block[10:13]) >> 4
+	m.streamInfo.Channels = ((getInt(block[12:13]) >> 1) & 0x07) + 1
+	m.streamInfo.SampleBitrate = ((getInt(block[12:13]) & 0x01) << 4) + (getInt(block[13:14]) >> 4) + 1
+	m.streamInfo.TotalSamples = getInt(append([]byte{block[13] & 0x0F}, block[14:18]...))
+	m.streamInfo.MD5Signature = block[18:]
 	return nil
 }
 
+//readVorbisComment reads a Vorbis comment from the corresponding metadata block
+//in a FLAC file
+//https://xiph.org/flac/format.html#metadata_block_vorbis_comment
 func (m *FLACMetadata) readVorbisComment(r io.Reader) error {
 	var err error
-	m.VorbisComment, err = ReadVorbisComment(r)
+	m.vorbisComment, err = ReadVorbisComment(r)
 	if err != nil {
 		return err
 	}
 	return nil
 }
 
+//readPictureBlock reads a FLAC picture metadata block into FLACMetadata
+//https://xiph.org/flac/format.html#metadata_block_picture
 func (m *FLACMetadata) readPictureBlock(r io.Reader) error {
 	b, err := readInt(r, 4)
 	if err != nil {
@@ -248,7 +161,7 @@ func (m *FLACMetadata) readPictureBlock(r io.Reader) error {
 		return err
 	}
 
-	// We skip width <32>, height <32>, colorDepth <32>, coloresUsed <32>
+	// We skip width <32>, height <32>, colorDepth <32>, colorsUsed <32>
 	_, err = readInt(r, 4) // width
 	if err != nil {
 		return err
@@ -283,6 +196,152 @@ func (m *FLACMetadata) readPictureBlock(r io.Reader) error {
 		Description: desc,
 		Data:        data,
 	}
-	m.Pictures = append(m.Pictures, picture)
+	m.pictures = append(m.pictures, picture)
 	return nil
+}
+
+func (m FLACMetadata) Album() string {
+	if m.vorbisComment != nil {
+		return m.vorbisComment.Album()
+	}
+	return ""
+}
+
+func (m FLACMetadata) AlbumArtist() string {
+	if m.vorbisComment != nil {
+		return m.vorbisComment.AlbumArtist()
+	}
+	return ""
+}
+
+func (m FLACMetadata) Artist() string {
+	if m.vorbisComment != nil {
+		return m.vorbisComment.Artist()
+	}
+	return ""
+}
+
+func (m FLACMetadata) Comment() string {
+	if m.vorbisComment != nil {
+		return m.vorbisComment.Comment()
+	}
+	return ""
+}
+
+func (m FLACMetadata) Composer() string {
+	if m.vorbisComment != nil {
+		return m.vorbisComment.Composer()
+	}
+	return ""
+}
+
+func (m FLACMetadata) Disc() (int, int) {
+	if m.vorbisComment != nil {
+		return m.vorbisComment.Disc()
+	}
+	return 0, 0
+}
+
+func (m FLACMetadata) Duration() time.Duration {
+	if m.streamInfo.SampleRate == 0 {
+		return time.Duration(0)
+	}
+	//Calculate track length by dividing total samples by sample rate
+	seconds := float64(m.streamInfo.TotalSamples) / float64(m.streamInfo.SampleRate)
+	//convert to time.Duration
+	return time.Duration(seconds * float64(time.Second))
+}
+
+func (m FLACMetadata) FileType() FileType {
+	return m.fileType
+}
+
+func (m FLACMetadata) Format() Format {
+	if m.vorbisComment != nil {
+		return m.vorbisComment.Format()
+	}
+	return UnknownFormat
+}
+
+func (m FLACMetadata) Genre() string {
+	if m.vorbisComment != nil {
+		return m.vorbisComment.Genre()
+	}
+	return ""
+}
+
+func (m FLACMetadata) Lyrics() string {
+	if m.vorbisComment != nil {
+		return m.vorbisComment.Lyrics()
+	}
+	return ""
+}
+
+//Picture attempts to return front cover art, else it returns the first picture
+//found in the FLAC metadata
+func (m FLACMetadata) Picture() *Picture {
+	if len(m.pictures) == 0 {
+		return nil
+	}
+	for _, pic := range m.pictures {
+		if pic.Type == pictureTypes[0x03] {
+			return &pic
+		}
+	}
+	return &m.pictures[0]
+}
+
+//Pictures returns ALL pictures found in a FLAC file's metadata.
+//https://xiph.org/flac/format.html#metadata_block_picture
+func (m FLACMetadata) Pictures() []Picture {
+	return m.pictures
+}
+
+//StreamInfo returns the data extracted from a FLAC file's stream info metadata
+//block. See the StreamInfo struct type for more information.
+func (m FLACMetadata) StreamInfo() StreamInfo {
+	return m.streamInfo
+}
+
+func (m FLACMetadata) Title() string {
+	if m.vorbisComment != nil {
+		return m.vorbisComment.Title()
+	}
+	return ""
+}
+
+func (m FLACMetadata) Track() (int, int) {
+	if m.vorbisComment != nil {
+		return m.vorbisComment.Track()
+	}
+	return 0, 0
+}
+
+//VorbisComment returns the information found in a FLAC file's Vorbis comment
+//metadata block. The data in this block is sometimes also referred to as FLAC
+//tags.
+func (m FLACMetadata) VorbisComment() *VorbisComment {
+	return m.vorbisComment
+}
+
+func (m FLACMetadata) Year() int {
+	if m.vorbisComment != nil {
+		return m.vorbisComment.Year()
+	}
+	return 0
+}
+
+//StreamInfo holds general information about the FLAC audio stream and is
+//extracted from a FLAC file's STREAMINFO metadata block
+//https://xiph.org/flac/format.html#metadata_block_streaminfo
+type StreamInfo struct {
+	MinBlockSize  int //Min block size in samples
+	MaxBlockSize  int //Max block size in samples
+	MinFrameSize  int //Min frame size in bytes
+	MaxFrameSize  int //Max frame size in bytes
+	SampleRate    int //Sample rate in hertz
+	Channels      int //Number of channels in the stream
+	SampleBitrate int //Bits per sample
+	TotalSamples  int //Total number of samples in the stream
+	MD5Signature  []byte
 }

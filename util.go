@@ -7,7 +7,18 @@ package yurit
 import (
 	"encoding/binary"
 	"io"
+	"math"
 )
+
+//Does strings contain aString
+func containsString(strings []string, aString string) bool {
+	for _, s := range strings {
+		if s == aString {
+			return true
+		}
+	}
+	return false
+}
 
 func getBit(b byte, n uint) bool {
 	x := byte(1 << n)
@@ -30,6 +41,27 @@ func getInt(b []byte) int {
 		n |= int(x)
 	}
 	return n
+}
+
+func getUintLittleEndian(b []byte) uint {
+	var n uint
+	for i, x := range b {
+		n += uint(x) << uint(8*i)
+	}
+	return n
+}
+
+func getSignedInt32LittleEndian(b []byte) int32 {
+	return int32(binary.LittleEndian.Uint32(b))
+}
+
+func get16Dot16FixedPointAsFloat(b []byte) float64 {
+	return float64(getInt(b)) / 65536.0
+}
+
+func getFloat64(b []byte) float64 {
+	i := uint64(getInt(b))
+	return math.Float64frombits(i)
 }
 
 func readUint64LittleEndian(r io.Reader) (uint64, error) {

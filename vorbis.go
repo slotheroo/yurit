@@ -12,39 +12,41 @@ import (
 	"time"
 )
 
-/*func newMetadataVorbis() *metadataVorbis {
-	return &metadataVorbis{
-		c: make(map[string]string),
-	}
-}
-
-type metadataVorbis struct {
-	c map[string]string // the vorbis comments
-	p *Picture
-}*/
-
+//VorbisComment contains tag data from a Vorbis comment. This type of tag is
+//typically found in Ogg (.ogg) and FLAC (.flac) files
 type VorbisComment struct {
-	Fields map[string]string
+	Size     int //Size of the comment header and comments
+	Comments map[string]string
 }
 
+//ReadVorbisComment will read a Vorbis comment from an io.Reader and returns a
+//pointer to a VorbisComment. The io.Reader must be positioned at the beginning
+//of the Vorbis comment header to read the comment correctly.
 func ReadVorbisComment(r io.Reader) (*VorbisComment, error) {
-	var m = VorbisComment{Fields: make(map[string]string)}
+	var m = VorbisComment{Comments: make(map[string]string)}
+
+	//Get the size of the vendor field then read it into our struct
 	vendorLen, err := readUint32LittleEndian(r)
 	if err != nil {
 		return nil, err
 	}
-
 	vendor, err := readString(r, uint(vendorLen))
 	if err != nil {
 		return nil, err
 	}
-	m.Fields["vendor"] = vendor
+	m.Comments["vendor"] = vendor
 
+	//Get the length of the comments section
 	commentsLen, err := readUint32LittleEndian(r)
 	if err != nil {
 		return nil, err
 	}
 
+	//We now know that the overall size is the combined length values plus 4 bytes
+	//each for the length data fields themselves
+	m.Size = int(vendorLen + commentsLen + 8)
+
+	//Iterate and read in each comment
 	for i := uint32(0); i < commentsLen; i++ {
 		l, err := readUint32LittleEndian(r)
 		if err != nil {
@@ -58,7 +60,7 @@ func ReadVorbisComment(r io.Reader) (*VorbisComment, error) {
 		if err != nil {
 			return nil, err
 		}
-		m.Fields[strings.ToLower(k)] = v
+		m.Comments[strings.ToLower(k)] = v
 	}
 	return &m, nil
 }
@@ -78,16 +80,8 @@ func (m *VorbisComment) Format() Format {
 	return VORBIS
 }
 
-/*func (m *VorbisComment) Raw() map[string]interface{} {
-	raw := make(map[string]interface{}, len(m.Fields))
-	for k, v := range m.Fields {
-		raw[k] = v
-	}
-	return raw
-}*/
-
 func (m *VorbisComment) Title() string {
-	return m.Fields["title"]
+	return m.Comments["title"]
 }
 
 func (m *VorbisComment) Artist() string {
@@ -96,20 +90,20 @@ func (m *VorbisComment) Artist() string {
 	// conductor, orchestra, soloists. In an audio book it would be the actor who
 	// did the reading. In popular music this is typically the same as the ARTIST
 	// and is omitted.
-	if m.Fields["performer"] != "" {
-		return m.Fields["performer"]
+	if m.Comments["performer"] != "" {
+		return m.Comments["performer"]
 	}
-	return m.Fields["artist"]
+	return m.Comments["artist"]
 }
 
 func (m *VorbisComment) Album() string {
-	return m.Fields["album"]
+	return m.Comments["album"]
 }
 
 func (m *VorbisComment) AlbumArtist() string {
 	// This field isn't actually included in the standard, though
 	// it is commonly assigned to albumartist.
-	return m.Fields["albumartist"]
+	return m.Comments["albumartist"]
 }
 
 func (m *VorbisComment) Composer() string {
@@ -117,17 +111,17 @@ func (m *VorbisComment) Composer() string {
 	// The artist generally considered responsible for the work. In popular music
 	// this is usually the performing band or singer. For classical music it would
 	// be the composer. For an audio book it would be the author of the original text.
-	if m.Fields["composer"] != "" {
-		return m.Fields["composer"]
+	if m.Comments["composer"] != "" {
+		return m.Comments["composer"]
 	}
-	if m.Fields["performer"] == "" {
+	if m.Comments["performer"] == "" {
 		return ""
 	}
-	return m.Fields["artist"]
+	return m.Comments["artist"]
 }
 
 func (m *VorbisComment) Genre() string {
-	return m.Fields["genre"]
+	return m.Comments["genre"]
 }
 
 func (m *VorbisComment) Year() int {
@@ -135,7 +129,7 @@ func (m *VorbisComment) Year() int {
 
 	// The date need to follow the international standard https://en.wikipedia.org/wiki/ISO_8601
 	// and obviously the VorbisComment standard https://wiki.xiph.org/VorbisComment#Date_and_time
-	switch len(m.Fields["date"]) {
+	switch len(m.Comments["date"]) {
 	case 0:
 		return 0
 	case 4:
@@ -146,31 +140,31 @@ func (m *VorbisComment) Year() int {
 		dateFormat = "2006-01-02"
 	}
 
-	t, _ := time.Parse(dateFormat, m.Fields["date"])
+	t, _ := time.Parse(dateFormat, m.Comments["date"])
 	return t.Year()
 }
 
 func (m *VorbisComment) Track() (int, int) {
-	x, _ := strconv.Atoi(m.Fields["tracknumber"])
+	x, _ := strconv.Atoi(m.Comments["tracknumber"])
 	// https://wiki.xiph.org/Field_names
-	n, _ := strconv.Atoi(m.Fields["tracktotal"])
+	n, _ := strconv.Atoi(m.Comments["tracktotal"])
 	return x, n
 }
 
 func (m *VorbisComment) Disc() (int, int) {
 	// https://wiki.xiph.org/Field_names
-	x, _ := strconv.Atoi(m.Fields["discnumber"])
-	n, _ := strconv.Atoi(m.Fields["disctotal"])
+	x, _ := strconv.Atoi(m.Comments["discnumber"])
+	n, _ := strconv.Atoi(m.Comments["disctotal"])
 	return x, n
 }
 
 func (m *VorbisComment) Lyrics() string {
-	return m.Fields["lyrics"]
+	return m.Comments["lyrics"]
 }
 
 func (m *VorbisComment) Comment() string {
-	if m.Fields["comment"] != "" {
-		return m.Fields["comment"]
+	if m.Comments["comment"] != "" {
+		return m.Comments["comment"]
 	}
-	return m.Fields["description"]
+	return m.Comments["description"]
 }
