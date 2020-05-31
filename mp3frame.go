@@ -4,16 +4,19 @@ import (
 	"io"
 )
 
-//MPEGFrameHeader represents the information contained in the first frame header
-//encountered in an mpeg file. Much of this information would be consistent for
+//MP3FrameHeader represents the information contained in the first frame header
+//encountered in an mp3 file. Much of this information would be consistent for
 //all frame headers in a file, but some would vary from frame to frame. For
 //instance, the version and layer will be the same in all frames, but the
 //bitrate could vary from frame to frame in a variable bitrate (VBR) file.
-type MPEGFrameHeader struct {
+//Technically this frame header can apply to different MPEG layers (e.g. mp2) so
+//the name MP3FrameHeader is not entirely apt, but an exhaustively descriptive
+//name would be cumbersome.
+type MP3FrameHeader struct {
 	Version       MPEGVersion
 	Layer         MPEGLayer
 	Protected     bool //True for 0 bit! Indicates that a CRC follows the header.
-	Bitrate       int  //Frame bitrate in kilobits per second (1000 bits/sec)
+	Bitrate       int  //Frame bitrate in kilobits per second (e.g. 128 = 128000bps)
 	SamplingRate  int  //File sampling rate frequency in hertz
 	Padded        bool //True for 1 bit. Indicates that this frame is padded with one slot.
 	Private       bool //True for 1 bit. So private that no one knows what this is for.
@@ -25,10 +28,12 @@ type MPEGFrameHeader struct {
 }
 
 //MPEGVersion is the audio version ID for the file. For most common MP3 files
-//this will almost always be MPEG Version 1.
+//this will almost always be MPEG Version 1. The sampling rate for a file will
+//exclusively map to one of these versions. (e.g. All 44.1 kHz files are MPEG
+//Version 1)
 type MPEGVersion string
 
-//All possible version values
+//All possible version values.
 const (
 	MPEGVersion_2_5     MPEGVersion = "MPEG Version 2.5"
 	MPEGVersionReserved MPEGVersion = "reserved"
@@ -51,9 +56,9 @@ type MPEGLayer string
 //All possible layer values
 const (
 	MPEGLayerReserved MPEGLayer = "reserved"
-	MPEGLayer3        MPEGLayer = "Layer III"
-	MPEGLayer2        MPEGLayer = "Layer II"
-	MPEGLayer1        MPEGLayer = "Layer I"
+	MPEGLayer3        MPEGLayer = "Layer III" //mp3
+	MPEGLayer2        MPEGLayer = "Layer II"  //mp2
+	MPEGLayer1        MPEGLayer = "Layer I"   //mp1
 )
 
 //maps header byte to layer value
@@ -182,26 +187,35 @@ var mpegEmphasisMap = map[byte]MPEGEmphasis{
 	3: MPEGEmphasisCCIT,
 }
 
-//readMPEGFrameHeader searches for the frame sync match (11111111 111xxxxx) then
+//readMP3FrameHeader searches for the frame sync match (11111111 111xxxxx) then
 //reads the first frame header encountered
-func readMPEGFrameHeader(r io.Reader) (MPEGFrameHeader, error) {
+//Bits: AAAAAAAA AAABBCCD EEEEFFGH IIJJKLMM
+//A = Frame sync (all 1s), B = MPEG audio version, C = Layer description
+//D = Protection bit, E = Bitrate index, F = Sampling rate index,
+//G = Padding bit, H = Private bit, I = Channel mode, J = Mode extension,
+//K = Copyright, L = Original, M = Emphasis
+func readMP3FrameHeader(r io.Reader) (MP3FrameHeader, error) {
 	var (
-		numBytesToRead  uint = 4
-		buff            []byte
-		mpegFrameHeader MPEGFrameHeader
+		numBytesToRead uint = 4
+		buff           []byte
+		mp3FrameHeader MP3FrameHeader
 	)
+	//Read bytes until we find a frame sync match
 	for {
 		b, err := readBytes(r, numBytesToRead)
 		if err != nil {
-			return mpegFrameHeader, err
+			return mp3FrameHeader, err
 		}
+		//This is always expected to fill buff to exactly 4 bytes
 		buff = append(buff, b...)
+		//If frame sync match, break. Else see if the match is or may be  present
+		//but is not yet aligned to the first byte.
 		if buff[0] == 0xFF && (buff[1]&0xE0 == 0xE0) {
 			break
-		} else if buff[1] == 0xFF {
+		} else if buff[1] == 0xFF && (buff[2]&0xE0 == 0xE0) {
 			numBytesToRead = 1
 			buff = buff[1:]
-		} else if buff[2] == 0xFF {
+		} else if buff[2] == 0xFF && (buff[3]&0xE0 == 0xE0) {
 			numBytesToRead = 2
 			buff = buff[2:]
 		} else if buff[3] == 0xFF {
@@ -212,23 +226,23 @@ func readMPEGFrameHeader(r io.Reader) (MPEGFrameHeader, error) {
 			buff = []byte{}
 		}
 	}
-	mpegFrameHeader.Version = extractMPEGVersion(buff[1])
-	mpegFrameHeader.Layer = extractMPEGLayer(buff[1])
-	mpegFrameHeader.Protected = !getBit(buff[1], 0) //The 1 bit means NOT protected
-	mpegFrameHeader.Bitrate = extractMPEGBitrate(buff[2], mpegFrameHeader.Version, mpegFrameHeader.Layer)
-	mpegFrameHeader.SamplingRate = extractMPEGSamplingRate(buff[2], mpegFrameHeader.Version)
-	mpegFrameHeader.Padded = getBit(buff[2], 1)
-	mpegFrameHeader.Private = getBit(buff[2], 0)
-	mpegFrameHeader.ChannelMode = extractMPEGChannelMode(buff[3])
-	if mpegFrameHeader.ChannelMode == MPEGChannelJointStereo {
-		mpegFrameHeader.ModeExtension = extractMPEGModeExtension(buff[3], mpegFrameHeader.Layer)
+	mp3FrameHeader.Version = extractMPEGVersion(buff[1])
+	mp3FrameHeader.Layer = extractMPEGLayer(buff[1])
+	mp3FrameHeader.Protected = !getBit(buff[1], 0) //The 1 bit means NOT protected
+	mp3FrameHeader.Bitrate = extractMPEGBitrate(buff[2], mp3FrameHeader.Version, mp3FrameHeader.Layer)
+	mp3FrameHeader.SamplingRate = extractMPEGSamplingRate(buff[2], mp3FrameHeader.Version)
+	mp3FrameHeader.Padded = getBit(buff[2], 1)
+	mp3FrameHeader.Private = getBit(buff[2], 0)
+	mp3FrameHeader.ChannelMode = extractMPEGChannelMode(buff[3])
+	if mp3FrameHeader.ChannelMode == MPEGChannelJointStereo {
+		mp3FrameHeader.ModeExtension = extractMPEGModeExtension(buff[3], mp3FrameHeader.Layer)
 	} else {
-		mpegFrameHeader.ModeExtension = MPEGModeExtensionNA
+		mp3FrameHeader.ModeExtension = MPEGModeExtensionNA
 	}
-	mpegFrameHeader.Copyright = getBit(buff[3], 3)
-	mpegFrameHeader.Original = getBit(buff[3], 2)
-	mpegFrameHeader.Emphasis = extractMPEGEmphasis(buff[3])
-	return mpegFrameHeader, nil
+	mp3FrameHeader.Copyright = getBit(buff[3], 3)
+	mp3FrameHeader.Original = getBit(buff[3], 2)
+	mp3FrameHeader.Emphasis = extractMPEGEmphasis(buff[3])
+	return mp3FrameHeader, nil
 }
 
 //Given the second byte of a frame header, returns the version.
@@ -275,6 +289,69 @@ func extractMPEGEmphasis(b byte) MPEGEmphasis {
 	return mpegEmphasisMap[key]
 }
 
+//MP3FrameData represents additional frame information that is presented after
+//the frame header. This type only applies to layer III mpeg files (mp3s). Side
+//information is always expected whereas the CRC bytes and the Xing header may
+//or may not be present.
+type MP3FrameData struct {
+	CRC             []byte
+	SideInformation []byte
+	XingHeader      *XingHeader
+}
+
+//readMP3FrameData reads specific elements of non-audio frame data. The method
+//requires that the readseeker has been positioned correctly BEFORE the method
+//is called.
+func readMP3FrameData(r io.ReadSeeker, h MP3FrameHeader) (MP3FrameData, error) {
+	var (
+		err          error
+		mp3FrameData MP3FrameData
+	)
+	//This method does not read proper data for anything except an MP3, exit if else
+	if h.Layer != MPEGLayer3 {
+		return mp3FrameData, nil
+	}
+	//If protected is true, expect 2 bytes of CRC data
+	if h.Protected {
+		mp3FrameData.CRC, err = readBytes(r, 2)
+		if err != nil {
+			return mp3FrameData, err
+		}
+	}
+	//Amount of side information depends on version and channel mode
+	mp3FrameData.SideInformation, err = readBytes(r, mp3SideInfoByteLength(h.Version, h.ChannelMode))
+	if err != nil {
+		return mp3FrameData, err
+	}
+	//After the side information is where the Xing header may appear
+	xingCheck, err := readBytes(r, 4)
+	if err != nil {
+		return mp3FrameData, err
+	}
+	//Expected xing location, if it exists
+	if string(xingCheck) == XING_XING_ID || string(xingCheck) == XING_INFO_ID {
+		_, err := r.Seek(-4, io.SeekCurrent)
+		x, err := readXingHeader(r)
+		mp3FrameData.XingHeader = &x
+		if err != nil {
+			return mp3FrameData, err
+		}
+	} else if h.Protected && len(mp3FrameData.SideInformation) >= 2 {
+		//Look for xing in commonly misplaced location
+		xingCheck2 := mp3FrameData.SideInformation[len(mp3FrameData.SideInformation)-2:]
+		xingCheck2 = append(xingCheck2, xingCheck[:2]...)
+		if string(xingCheck2) == XING_XING_ID || string(xingCheck2) == XING_INFO_ID {
+			_, err := r.Seek(-6, io.SeekCurrent)
+			x, err := readXingHeader(r)
+			mp3FrameData.XingHeader = &x
+			if err != nil {
+				return mp3FrameData, err
+			}
+		}
+	}
+	return mp3FrameData, nil
+}
+
 //Returns the length of the side information based on version and channel mode.
 func mp3SideInfoByteLength(version MPEGVersion, channelMode MPEGChannelMode) uint {
 	//Don't bother with reserved
@@ -288,16 +365,6 @@ func mp3SideInfoByteLength(version MPEGVersion, channelMode MPEGChannelMode) uin
 		return 9
 	}
 	return 17
-}
-
-//MP3FrameData represents additional frame information that is presented after
-//the frame header. As indicated by the name, this type only applies to layer
-//III mpeg files. Side information is always expected whereas the CRC bytes and
-//the Xing header may or may not be present.
-type MP3FrameData struct {
-	CRC             []byte
-	SideInformation []byte
-	XingHeader      *XingHeader
 }
 
 //The XingHeader is an optional header found in within the data section of an
@@ -314,55 +381,11 @@ type XingHeader struct {
 	Quality *int
 }
 
-//readMP3FrameData reads specific elements of frame information. The method
-//requires that the readseeker has been positioned correctly BEFORE the method
-//is called.
-func readMP3FrameData(r io.ReadSeeker, h MPEGFrameHeader) (MP3FrameData, error) {
-	var (
-		err          error
-		mp3FrameData MP3FrameData
-	)
-	//This method does not read proper data for anything except an MP3, exit if else
-	if h.Layer != MPEGLayer3 {
-		return mp3FrameData, nil
-	}
-	if h.Protected {
-		mp3FrameData.CRC, err = readBytes(r, 2)
-		if err != nil {
-			return mp3FrameData, err
-		}
-	}
-	mp3FrameData.SideInformation, err = readBytes(r, mp3SideInfoByteLength(h.Version, h.ChannelMode))
-	if err != nil {
-		return mp3FrameData, err
-	}
-	xingCheck, err := readBytes(r, 4)
-	if err != nil {
-		return mp3FrameData, err
-	}
-	//Expected xing location, if it exists
-	if string(xingCheck) == "Xing" || string(xingCheck) == "Info" {
-		_, err := r.Seek(-4, io.SeekCurrent)
-		x, err := readXingHeader(r)
-		mp3FrameData.XingHeader = &x
-		if err != nil {
-			return mp3FrameData, err
-		}
-	} else if h.Protected && len(mp3FrameData.SideInformation) >= 2 {
-		//Look for xing in commonly misplaced location
-		xingCheck2 := mp3FrameData.SideInformation[len(mp3FrameData.SideInformation)-2:]
-		xingCheck2 = append(xingCheck2, xingCheck[:2]...)
-		if string(xingCheck2) == "Xing" || string(xingCheck2) == "Info" {
-			_, err := r.Seek(-6, io.SeekCurrent)
-			x, err := readXingHeader(r)
-			mp3FrameData.XingHeader = &x
-			if err != nil {
-				return mp3FrameData, err
-			}
-		}
-	}
-	return mp3FrameData, nil
-}
+//All possible version values.
+const (
+	XING_XING_ID string = "Xing"
+	XING_INFO_ID string = "Info"
+)
 
 //readXingHeader reads reads information in a Xing or Info header. The method
 //requires that the reader has been positioned correctly BEFORE the method is
@@ -371,11 +394,14 @@ func readXingHeader(r io.Reader) (XingHeader, error) {
 	var (
 		xingHeader XingHeader
 	)
+	//xingIntro = ID and flags
 	xingIntro, err := readBytes(r, 8)
 	if err != nil {
 		return xingHeader, err
 	}
+	//First four bytes are the ID ("Xing" or "Info")
 	xingHeader.ID = string(xingIntro[:4])
+	//If Frames flag is set, read number of frames
 	if getBit(xingIntro[7], 0) {
 		numFramesBytes, err := readBytes(r, 4)
 		if err != nil {
@@ -384,6 +410,7 @@ func readXingHeader(r io.Reader) (XingHeader, error) {
 		numFrames := getInt(numFramesBytes)
 		xingHeader.Frames = &numFrames
 	}
+	//If Bytes flag is set, read number of bytes
 	if getBit(xingIntro[7], 1) {
 		numBytesBytes, err := readBytes(r, 4)
 		if err != nil {
@@ -392,12 +419,14 @@ func readXingHeader(r io.Reader) (XingHeader, error) {
 		numBytes := getInt(numBytesBytes)
 		xingHeader.Bytes = &numBytes
 	}
+	//If TOC flag is set, read TOC bytes
 	if getBit(xingIntro[7], 2) {
 		xingHeader.TOC, err = readBytes(r, 100)
 		if err != nil {
 			return xingHeader, err
 		}
 	}
+	//If Quality flag is set, read quality indicator
 	if getBit(xingIntro[7], 3) {
 		qualityBytes, err := readBytes(r, 4)
 		if err != nil {

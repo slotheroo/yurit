@@ -12,14 +12,63 @@ import (
 	"io"
 	"strconv"
 	"strings"
+	"time"
 )
 
-var atomMetaValTypes = map[int]string{
-	0:  "implicit", // automatic based on atom name
-	1:  "text",
-	13: "jpeg",
-	14: "png",
-	21: "uint8",
+//ESDSAtom contains select information from the elementary stream descriptor
+//atom as per ISO/IEC 14496-1.
+type ESDSAtom struct {
+	ObjectProfileIndication byte //0x40 == Audio 14496-3 AAC Main
+	StreamType              byte //0x05 == AudioStream
+	MaxBitrate              int
+	AvgBitrate              int //average bitrate
+}
+
+//MovieHeaderAtom contains select information from the Movie Header (mvhd) atom.
+//This includes the duration and time scale. These two fiels are related. The
+//time scale represents how many units occur per second in the stream -- which
+//for audio means sample rate. The duration represents the total number of those
+//units in the stream.
+type MovieHeaderAtom struct {
+	TimeScale int
+	Duration  int
+}
+
+//MP4AAtom contains select information from the mp4a Sample Descriptor atom.
+//The specific data extracted include the number of channels and the sample
+//rate. The sample rate here should match the time scale in the MovieHeaderAtom.
+type MP4AAtom struct {
+	Version    int
+	Channels   int
+	SampleRate float64
+}
+
+type MP4ASampleDescription struct {
+	raw map[string]interface{}
+}
+
+type ESDSExtension struct {
+	raw map[string]interface{}
+}
+
+// MP4Metadata is the implementation of Metadata for MP4 tag (atom) data.
+type MP4Metadata struct {
+	fileType        FileType
+	data            map[string]interface{}
+	movieHeaderAtom *MovieHeaderAtom
+	mp4aAtom        *MP4AAtom
+	esdsAtom        *ESDSAtom
+}
+
+// ReadMP4 reads MP4 metadata atoms from the io.ReadSeeker into a Metadata, returning
+// non-nil error if there was a problem.
+func ReadMP4(r io.ReadSeeker) (MP4Metadata, error) {
+	m := MP4Metadata{
+		data:     make(map[string]interface{}),
+		fileType: UnknownFileType,
+	}
+	err := m.readAtoms(r)
+	return m, err
 }
 
 // NB: atomMetaItemNames does not include "----", this is handled separately
@@ -45,39 +94,6 @@ var atomMetaItemNames = []string{
 	"disk",    //disk number
 }
 
-// Detect PNG image if "implicit" class is used
-var pngHeader = []byte{137, 80, 78, 71, 13, 10, 26, 10}
-
-// MP4Metadata is the implementation of Metadata for MP4 tag (atom) data.
-type MP4Metadata struct {
-	fileType             FileType
-	Data                 map[string]interface{}
-	MovieHeader          *MovieHeaderAtom
-	MP4ASampleDescriptor *MP4AAtom
-	ESDS                 *ESDSAtom
-}
-
-//MovieHeaderAtom contains select information from the Movie Header (mvhd) atom
-type MovieHeaderAtom struct {
-	TimeScale int
-	Duration  int
-}
-
-//MP4AAtom contains select information from the mp4a Sample Descriptor atom
-type MP4AAtom struct {
-	Channels   int
-	SampleRate float64
-}
-
-//ESDSAtom contains select information from the elementary stream descriptor
-//atom as per ISO/IEC 14496-1
-type ESDSAtom struct {
-	ObjectProfileIndication byte //0x40 == Audio 14496-3 AAC Main
-	StreamType              byte //0x05 == AudioStream
-	MaxBitrate              int
-	AvgBitrate              int //average bitrate
-}
-
 //Atoms where we want to look for child atoms and how many bytes to skip when
 //moving to the child level. (Some atoms have version, flags etc. after the name
 //but before the child atom header.)
@@ -91,17 +107,6 @@ var parentAtomNamesSkipBytes = map[string]int64{
 	"stsd": 8, //1 byte version, 3 bytes flags, 4 bytes number of entries
 	"trak": 0,
 	"udta": 0,
-}
-
-// ReadAtoms reads MP4 metadata atoms from the io.ReadSeeker into a Metadata, returning
-// non-nil error if there was a problem.
-func ReadMP4(r io.ReadSeeker) (MP4Metadata, error) {
-	m := MP4Metadata{
-		Data:     make(map[string]interface{}),
-		fileType: UnknownFileType,
-	}
-	err := m.readAtoms(r)
-	return m, err
 }
 
 func (m *MP4Metadata) readAtoms(r io.ReadSeeker) error {
@@ -140,13 +145,16 @@ func (m *MP4Metadata) readAtoms(r io.ReadSeeker) error {
 			return err
 		}
 
-		//Check to see if this is a parent atom where we want to  read the children
+		//Check to see if this is a parent atom where we want to read the children
 		//and if so how many bytes are between the name and the first child
 		skipBytes, ok := parentAtomNamesSkipBytes[name]
 		//If so skip only those bytes (not the entire size) and restart the loop
 		if ok {
 			if skipBytes > 0 {
 				_, err = r.Seek(skipBytes, io.SeekCurrent)
+			}
+			if err != nil {
+				return err
 			}
 			continue
 		} else if name == "mvhd" {
@@ -160,11 +168,15 @@ func (m *MP4Metadata) readAtoms(r io.ReadSeeker) error {
 			} else if len(b) < 20 {
 				return fmt.Errorf("invalid encoding: expected at least %d bytes, got %d", 20, len(b))
 			}
-			//First 12 bytes are Version (1B), Flags (3B), Creation Time (4B), and
-			//Modification Time (4B)
+			vers := b[0]
+			if vers != 0 {
+				//Unknown version, don't process
+				continue
+			}
+			//Next 11 bytes are Flags (3B), Creation Time (4B), and Modification Time (4B)
 			mvhd.TimeScale = getInt(b[12:16])
 			mvhd.Duration = getInt(b[16:20])
-			m.MovieHeader = &mvhd
+			m.movieHeaderAtom = &mvhd
 			continue
 		} else if name == "mp4a" {
 			//mp4a atom is a sample description stored as a child of a sample
@@ -195,7 +207,7 @@ func (m *MP4Metadata) readAtoms(r io.ReadSeeker) error {
 						return err
 					}
 				}
-				m.MP4ASampleDescriptor = &mp4a
+				m.mp4aAtom = &mp4a
 			} else if vers == 2 {
 				//If version is 2 then the layout of the sample description is different
 				//The data we need stil needs to be read
@@ -208,7 +220,7 @@ func (m *MP4Metadata) readAtoms(r io.ReadSeeker) error {
 				}
 				mp4a.Channels = getInt(b2[12:16])
 				mp4a.SampleRate = getFloat64(b2[4:12])
-				m.MP4ASampleDescriptor = &mp4a
+				m.mp4aAtom = &mp4a
 			} else {
 				//Unknown version, skip to next atom ignoring any children
 				_, err = r.Seek(int64(size-28), io.SeekCurrent)
@@ -254,7 +266,7 @@ func (m *MP4Metadata) readAtoms(r io.ReadSeeker) error {
 			esds.StreamType = b[12+(2*extendedTagSize)] >> 2
 			esds.MaxBitrate = getInt(b[16+(2*extendedTagSize) : 20+(2*extendedTagSize)])
 			esds.AvgBitrate = getInt(b[20+(2*extendedTagSize) : 24+(2*extendedTagSize)])
-			m.ESDS = &esds
+			m.esdsAtom = &esds
 			continue
 		} else {
 			//Check and see if this is a meta item that we need to process
@@ -288,6 +300,17 @@ func (m *MP4Metadata) readAtoms(r io.ReadSeeker) error {
 		}
 	}
 }
+
+var atomMetaValTypes = map[int]string{
+	0:  "implicit", // automatic based on atom name
+	1:  "text",
+	13: "jpeg",
+	14: "png",
+	21: "uint8",
+}
+
+// Detect PNG image if "implicit" class is used
+var pngHeader = []byte{137, 80, 78, 71, 13, 10, 26, 10}
 
 func (m MP4Metadata) readMetaItemAtomData(r io.ReadSeeker, name string, size uint32, processedData []string) error {
 	var b []byte
@@ -332,8 +355,8 @@ func (m MP4Metadata) readMetaItemAtomData(r io.ReadSeeker, name string, size uin
 			return fmt.Errorf("invalid encoding: expected at least %d bytes, for track and disk numbers, got %d", 6, len(b))
 		}
 
-		m.Data[name] = int(b[3])
-		m.Data[name+"_count"] = int(b[5])
+		m.data[name] = int(b[3])
+		m.data[name+"_count"] = int(b[5])
 		return nil
 	}
 
@@ -370,7 +393,7 @@ func (m MP4Metadata) readMetaItemAtomData(r io.ReadSeeker, name string, size uin
 			Data:     b,
 		}
 	}
-	m.Data[name] = data
+	m.data[name] = data
 
 	return nil
 }
@@ -434,41 +457,8 @@ func readCustomAtom(r io.ReadSeeker, size uint32) (_ string, data []string, _ er
 	return subNames["name"], data, nil
 }
 
-func (MP4Metadata) Format() Format       { return MP4 }
-func (m MP4Metadata) FileType() FileType { return m.fileType }
-
-func (m MP4Metadata) Raw() map[string]interface{} { return m.Data }
-
-func (m MP4Metadata) getInt(n []string) int {
-	for _, k := range n {
-		if x, ok := m.Data[k]; ok {
-			return x.(int)
-		}
-	}
-	return 0
-}
-
-func (m MP4Metadata) Title() string {
-	t, ok := m.Data["\xa9nam"]
-	if !ok {
-		return ""
-	}
-	return t.(string)
-}
-
-func (m MP4Metadata) Artist() string {
-	t, ok := m.Data["\xa9art"]
-	if !ok {
-		t, ok = m.Data["\xa9ART"]
-		if !ok {
-			return ""
-		}
-	}
-	return t.(string)
-}
-
 func (m MP4Metadata) Album() string {
-	t, ok := m.Data["\xa9alb"]
+	t, ok := m.data["\xa9alb"]
 	if !ok {
 		return ""
 	}
@@ -476,7 +466,36 @@ func (m MP4Metadata) Album() string {
 }
 
 func (m MP4Metadata) AlbumArtist() string {
-	t, ok := m.Data["aART"]
+	t, ok := m.data["aART"]
+	if !ok {
+		return ""
+	}
+	return t.(string)
+}
+
+func (m MP4Metadata) Artist() string {
+	t, ok := m.data["\xa9art"]
+	if !ok {
+		t, ok = m.data["\xa9ART"]
+		if !ok {
+			return ""
+		}
+	}
+	return t.(string)
+}
+
+func (m MP4Metadata) AverageBitrate() int {
+	if m.esdsAtom != nil {
+		if m.esdsAtom.AvgBitrate != 0 {
+			return m.esdsAtom.AvgBitrate
+		}
+		return m.esdsAtom.MaxBitrate
+	}
+	return 0
+}
+
+func (m MP4Metadata) Comment() string {
+	t, ok := m.data["\xa9cmt"]
 	if !ok {
 		return ""
 	}
@@ -484,23 +503,112 @@ func (m MP4Metadata) AlbumArtist() string {
 }
 
 func (m MP4Metadata) Composer() string {
-	t, ok := m.Data["\xa9wrt"]
+	t, ok := m.data["\xa9wrt"]
 	if !ok {
 		return ""
 	}
 	return t.(string)
+}
+
+func (m MP4Metadata) Disc() (int, int) {
+	var x, y = 0, 0
+	if xi, ok := m.data["disk"]; ok {
+		x = xi.(int)
+	}
+	if yi, ok := m.data["disk_count"]; ok {
+		y = yi.(int)
+	}
+	return x, y
+}
+
+func (m MP4Metadata) Duration() time.Duration {
+	if m.movieHeaderAtom == nil {
+		return time.Duration(0)
+	}
+	//Calculate true duration by dividing duration (total samples) by time scale (sample rate)
+	seconds := float64(m.movieHeaderAtom.Duration) / float64(m.movieHeaderAtom.TimeScale)
+	return time.Duration(seconds * float64(time.Second))
+}
+
+//Returns information extracted from the elementary stream descriptor atom
+//('esds') found in the file.
+func (m MP4Metadata) ESDSAtom() *ESDSAtom {
+	return m.esdsAtom
+}
+
+func (m MP4Metadata) FileType() FileType {
+	return m.fileType
+}
+
+func (m MP4Metadata) Format() Format {
+	if m.data != nil {
+		return MP4
+	}
+	return UnknownFormat
 }
 
 func (m MP4Metadata) Genre() string {
-	t, ok := m.Data["\xa9gen"]
+	t, ok := m.data["\xa9gen"]
 	if !ok {
 		return ""
 	}
 	return t.(string)
 }
 
+func (m MP4Metadata) Lyrics() string {
+	t, ok := m.data["\xa9lyr"]
+	if !ok {
+		return ""
+	}
+	return t.(string)
+}
+
+//Returns information extracted from the movie header atom ('mvhd') found in the
+//file.
+func (m MP4Metadata) MovieHeaderAtom() *MovieHeaderAtom {
+	return m.movieHeaderAtom
+}
+
+//Returns information extracted from the MP4A sound sample description atom
+//('mp4a') found in the file.
+func (m MP4Metadata) MP4AAtom() *MP4AAtom {
+	return m.mp4aAtom
+}
+
+func (m MP4Metadata) Picture() *Picture {
+	v, ok := m.data["covr"]
+	if !ok {
+		return nil
+	}
+	p, _ := v.(*Picture)
+	return p
+}
+
+func (m MP4Metadata) Raw() map[string]interface{} {
+	return m.data
+}
+
+func (m MP4Metadata) Title() string {
+	t, ok := m.data["\xa9nam"]
+	if !ok {
+		return ""
+	}
+	return t.(string)
+}
+
+func (m MP4Metadata) Track() (int, int) {
+	var x, y = 0, 0
+	if xi, ok := m.data["trkn"]; ok {
+		x = xi.(int)
+	}
+	if yi, ok := m.data["trkn_count"]; ok {
+		y = yi.(int)
+	}
+	return x, y
+}
+
 func (m MP4Metadata) Year() int {
-	t, ok := m.Data["\xa9day"]
+	t, ok := m.data["\xa9day"]
 	if !ok {
 		return 0
 	}
@@ -510,51 +618,4 @@ func (m MP4Metadata) Year() int {
 		return year
 	}
 	return 0
-}
-
-func (m MP4Metadata) Track() (int, int) {
-	var x, y = 0, 0
-	if xi, ok := m.Data["trkn"]; ok {
-		x = xi.(int)
-	}
-	if yi, ok := m.Data["trkn_count"]; ok {
-		y = yi.(int)
-	}
-	return x, y
-}
-
-func (m MP4Metadata) Disc() (int, int) {
-	var x, y = 0, 0
-	if xi, ok := m.Data["disk"]; ok {
-		x = xi.(int)
-	}
-	if yi, ok := m.Data["disk_count"]; ok {
-		y = yi.(int)
-	}
-	return x, y
-}
-
-func (m MP4Metadata) Lyrics() string {
-	t, ok := m.Data["\xa9lyr"]
-	if !ok {
-		return ""
-	}
-	return t.(string)
-}
-
-func (m MP4Metadata) Comment() string {
-	t, ok := m.Data["\xa9cmt"]
-	if !ok {
-		return ""
-	}
-	return t.(string)
-}
-
-func (m MP4Metadata) Picture() *Picture {
-	v, ok := m.Data["covr"]
-	if !ok {
-		return nil
-	}
-	p, _ := v.(*Picture)
-	return p
 }

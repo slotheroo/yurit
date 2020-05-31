@@ -267,6 +267,24 @@ func (m OggMetadata) Artist() string {
 	return m.vorbisComment.Artist()
 }
 
+func (m OggMetadata) AverageBitrate() int {
+	// Bitrate nominal represents the average bitrate if it is set
+	if m.vorbisIDHeader.BitrateNominal != 0 {
+		return m.vorbisIDHeader.BitrateNominal
+	}
+	// Bitrate nominal not set so we'll try to guess the average
+	if m.vorbisIDHeader.BitrateMax != 0 {
+		if m.vorbisIDHeader.BitrateMin != 0 {
+			// Bitrate nominal is not set, but max and min are. Take the average
+			return (m.vorbisIDHeader.BitrateMax + m.vorbisIDHeader.BitrateMin) / 2
+		}
+		// Bitrate max is the only value set, return it
+		return m.vorbisIDHeader.BitrateMax
+	}
+	// Else return bitrate min, even if it 0
+	return m.vorbisIDHeader.BitrateMin
+}
+
 func (m OggMetadata) Comment() string {
 	return m.vorbisComment.Comment()
 }
@@ -279,7 +297,6 @@ func (m OggMetadata) Disc() (int, int) {
 	return m.vorbisComment.Disc()
 }
 
-//TODO
 func (m OggMetadata) Duration() time.Duration {
 	if m.vorbisIDHeader.SampleRate == 0 {
 		return time.Duration(0)

@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"io"
 	"math"
+	"strings"
 )
 
 //Does strings contain aString
@@ -43,6 +44,10 @@ func getInt(b []byte) int {
 	return n
 }
 
+func getString(b []byte) string {
+	return trimString(string(b))
+}
+
 func getUintLittleEndian(b []byte) uint {
 	var n uint
 	for i, x := range b {
@@ -56,12 +61,34 @@ func getSignedInt32LittleEndian(b []byte) int32 {
 }
 
 func get16Dot16FixedPointAsFloat(b []byte) float64 {
-	return float64(getInt(b)) / 65536.0
+	return float64(getUint32(b)) / 65536.0
 }
 
 func getFloat64(b []byte) float64 {
-	i := uint64(getInt(b))
+	i := binary.BigEndian.Uint64(b)
 	return math.Float64frombits(i)
+}
+
+func getInt16(b []byte) int64 {
+	return int64(int16(binary.BigEndian.Uint16(b)))
+}
+
+func getInt32(b []byte) int64 {
+	return int64(int32(binary.BigEndian.Uint32(b)))
+}
+
+func getUint16(b []byte) int64 {
+	return int64(binary.BigEndian.Uint16(b))
+}
+
+func getUint24(b []byte) int64 {
+	b2 := []byte{0}
+	b2 = append(b2, b...)
+	return int64(binary.BigEndian.Uint32(b2))
+}
+
+func getUint32(b []byte) int64 {
+	return int64(binary.BigEndian.Uint32(b))
 }
 
 func readUint64LittleEndian(r io.Reader) (uint64, error) {
@@ -128,4 +155,8 @@ func readSignedInt32LittleEndian(r io.Reader) (int32, error) {
 		return 0, err
 	}
 	return int32(binary.LittleEndian.Uint32(b)), nil
+}
+
+func trimString(x string) string {
+	return strings.TrimSpace(strings.Trim(x, "\x00"))
 }

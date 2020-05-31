@@ -1,5 +1,6 @@
 package yurit
 
+/*
 import (
 	"crypto/sha1"
 	"encoding/binary"
@@ -217,3 +218,4 @@ func skipFLACMetadataBlock(r io.ReadSeeker) (last bool, err error) {
 func hashSum(h hash.Hash) string {
 	return fmt.Sprintf("%x", h.Sum([]byte{}))
 }
+*/

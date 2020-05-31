@@ -1,16 +1,14 @@
-// Copyright 2015, David Howden
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
-
 package yurit
 
 import (
-	"errors"
 	"io"
 	"strconv"
-	"strings"
 )
 
+//ID3v1Tags holds metadata from an ID3v1 (or ID3v1.1) tag, which is sometimes
+//found at the end of an mp3 file. They may even be found when an ID3v2 tag is
+//included separately in the file.
+//http://id3.org/ID3v1
 type ID3v1Tags struct {
 	Frames map[string]interface{}
 }
@@ -41,81 +39,50 @@ var id3v1Genres = [...]string{
 	"Duet", "Punk Rock", "Drum Solo", "Acapella", "Euro-House", "Dance Hall",
 }
 
-// ErrNotID3v1 is an error which is returned when no ID3v1 header is found.
-var ErrNotID3v1 = errors.New("invalid ID3v1 header")
-
-// ReadID3v1Tags reads ID3v1 tags from the io.ReadSeeker.  Returns ErrNotID3v1
-// if there are no ID3v1 tags, otherwise non-nil error if there was a problem.
+//ReadID3v1Tags reads ID3v1 tags from the io.ReadSeeker. If there is no ID3v1
+//tag, returns nil.
 func ReadID3v1Tags(r io.ReadSeeker) (*ID3v1Tags, error) {
+	//And ID3v1 tag will always be 128 bytes from the end of the file
 	_, err := r.Seek(-128, io.SeekEnd)
 	if err != nil {
 		return nil, err
 	}
 
-	if tag, err := readString(r, 3); err != nil {
-		return nil, err
-	} else if tag != "TAG" {
-		return nil, ErrNotID3v1
-	}
-
-	title, err := readString(r, 30)
+	b, err := readBytes(r, 128)
 	if err != nil {
 		return nil, err
 	}
 
-	artist, err := readString(r, 30)
-	if err != nil {
-		return nil, err
-	}
-
-	album, err := readString(r, 30)
-	if err != nil {
-		return nil, err
-	}
-
-	year, err := readString(r, 4)
-	if err != nil {
-		return nil, err
-	}
-
-	commentBytes, err := readBytes(r, 30)
-	if err != nil {
-		return nil, err
-	}
-
-	var comment string
-	var track int
-	if commentBytes[28] == 0 {
-		comment = trimString(string(commentBytes[:28]))
-		track = int(commentBytes[29])
-	} else {
-		comment = trimString(string(commentBytes))
-	}
-
-	var genre string
-	genreID, err := readBytes(r, 1)
-	if err != nil {
-		return nil, err
-	}
-	if int(genreID[0]) < len(id3v1Genres) {
-		genre = id3v1Genres[int(genreID[0])]
+	//If this doesn't match then we don't have an ID3v1 tag
+	tag := getString(b[0:3])
+	if tag != "TAG" {
+		return nil, nil
 	}
 
 	f := make(map[string]interface{})
-	f["title"] = trimString(title)
-	f["artist"] = trimString(artist)
-	f["album"] = trimString(album)
-	f["year"] = trimString(year)
-	f["comment"] = trimString(comment)
-	f["track"] = track
-	f["genre"] = genre
+
+	f["title"] = getString(b[3:33])
+	f["artist"] = getString(b[33:63])
+	f["album"] = getString(b[63:93])
+	f["year"] = getString(b[93:97])
+
+	if b[125] == 0 {
+		f["comment"] = getString(b[97:125])
+		f["track"] = int(b[126])
+	} else {
+		f["comment"] = getString(b[97:127])
+		f["track"] = 0
+	}
+
+	genreID := int(b[127])
+	if genreID < len(id3v1Genres) {
+		f["genre"] = id3v1Genres[genreID]
+	} else {
+		f["genre"] = ""
+	}
 
 	m := ID3v1Tags{Frames: f}
 	return &m, nil
-}
-
-func trimString(x string) string {
-	return strings.TrimSpace(strings.Trim(x, "\x00"))
 }
 
 func (ID3v1Tags) Format() Format                { return ID3v1 }

@@ -1,13 +1,10 @@
-// Copyright 2015, David Howden
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
-
 package yurit
 
 import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"time"
 )
 
@@ -29,15 +26,21 @@ const (
 //FLAC container with a Vorbis comment.
 type FLACMetadata struct {
 	fileType      FileType
+	fileSize      int64
+	metadataSize  int64
 	streamInfo    StreamInfo
 	pictures      []Picture
 	vorbisComment *VorbisComment
 }
 
-// ReadFLACTags reads FLAC metadata from the io.ReadSeeker, returning the resulting
+// ReadFLACTags reads FLAC metadata from a FLAC file, returning the resulting
 // metadata in a Metadata implementation, or non-nil error if there was a problem.
-func ReadFLACTags(r io.ReadSeeker) (*FLACMetadata, error) {
-	flac, err := readString(r, 4)
+func ReadFLACTags(file *os.File) (*FLACMetadata, error) {
+	stat, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	flac, err := readString(file, 4)
 	if err != nil {
 		return nil, err
 	}
@@ -47,9 +50,11 @@ func ReadFLACTags(r io.ReadSeeker) (*FLACMetadata, error) {
 	}
 
 	m := &FLACMetadata{
-		fileType: FLAC,
+		fileType:     FLAC,
+		fileSize:     stat.Size(),
+		metadataSize: 4, //fLaC
 	}
-	err = m.readFLACMetadataBlocks(r)
+	err = m.readFLACMetadataBlocks(file)
 	if err != nil {
 		return nil, err
 	}
@@ -74,6 +79,7 @@ func (m *FLACMetadata) readFLACMetadataBlocks(r io.ReadSeeker) error {
 		if err != nil {
 			return err
 		}
+		m.metadataSize += int64(blockLen)
 
 		if blockType(blockHeader[0]) == streamInfoBlock {
 			err = m.readStreamInfoBlock(r)
@@ -221,6 +227,24 @@ func (m FLACMetadata) Artist() string {
 	return ""
 }
 
+// AverageBitrate returns the roughly calculated average bitrate of the file in
+// bits per second.
+//
+// While metadata is discounted for this calculation, frame headers are not,
+// so the returned value is likely to be slightly higher than the actual. This
+// difference is expected to be minor in most cases, though, and since average
+// bitrate for a FLAC file is fairly meaningless, the returned value is
+// considered sufficiently accurate.
+func (m FLACMetadata) AverageBitrate() int {
+	durationInSeconds := m.Duration().Seconds()
+	if durationInSeconds == 0 {
+		return 0
+	}
+	//calculate audioDataSize in bits, convert to float64 to use with durationInSeconds
+	audioDataSize := float64((m.fileSize - m.metadataSize) * 8)
+	return int(audioDataSize / durationInSeconds)
+}
+
 func (m FLACMetadata) Comment() string {
 	if m.vorbisComment != nil {
 		return m.vorbisComment.Comment()
@@ -295,6 +319,11 @@ func (m FLACMetadata) Picture() *Picture {
 //https://xiph.org/flac/format.html#metadata_block_picture
 func (m FLACMetadata) Pictures() []Picture {
 	return m.pictures
+}
+
+//SampleRate returns the SampleRate from a FLAC file's stream info block
+func (m FLACMetadata) SampleRate() int {
+	return m.streamInfo.SampleRate
 }
 
 //StreamInfo returns the data extracted from a FLAC file's stream info metadata
