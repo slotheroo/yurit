@@ -60,6 +60,10 @@ func getSignedInt32LittleEndian(b []byte) int32 {
 	return int32(binary.LittleEndian.Uint32(b))
 }
 
+func get8Dot8FixedPointAsFloat(b []byte) float64 {
+	return float64(getUint16(b)) / 256.0
+}
+
 func get16Dot16FixedPointAsFloat(b []byte) float64 {
 	return float64(getUint32(b)) / 65536.0
 }

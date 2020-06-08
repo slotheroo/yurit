@@ -4,6 +4,7 @@
 
 package yurit
 
+/*
 import (
 	"bytes"
 	"encoding/binary"
@@ -41,14 +42,6 @@ type MP4AAtom struct {
 	Version    int
 	Channels   int
 	SampleRate float64
-}
-
-type MP4ASampleDescription struct {
-	raw map[string]interface{}
-}
-
-type ESDSExtension struct {
-	raw map[string]interface{}
 }
 
 // MP4Metadata is the implementation of Metadata for MP4 tag (atom) data.
@@ -618,4 +611,4 @@ func (m MP4Metadata) Year() int {
 		return year
 	}
 	return 0
-}
+}*/

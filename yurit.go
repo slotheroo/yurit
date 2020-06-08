@@ -16,7 +16,10 @@ const (
 	ConstBitsPerChannelKey = "constBitsPerChannel"
 	ConstBytesPerPacket    = "constBytesPerPacket"
 	ConstFramesPerPacket   = "constFramesPerPacket"
+	DurationKey            = "duration"
+	FlagsKey               = "flags"
 	LPCMFlagsKey           = "lpcmFlags"
+	MajorBrandKey          = "majorBrand"
 	MaximumBitrateKey      = "maximumBitrate"
 	PacketSizeKey          = "packetSize"
 	RevisionKey            = "revision"
@@ -24,6 +27,7 @@ const (
 	SampleSizeKey          = "sampleSize"
 	SamplesPerPacketKey    = "samplesPerPacket"
 	SizeOfStructOnlyKey    = "sizeOfStructOnly"
+	TimeScaleKey           = "timeScale"
 	VendorKey              = "vendor"
 	VersionKey             = "version"
 )
