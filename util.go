@@ -6,10 +6,19 @@ package yurit
 
 import (
 	"encoding/binary"
+	"fmt"
 	"io"
 	"math"
 	"strings"
 )
+
+//checkLen checks to see if a specifix index is within range of a slice of bytes
+func checkLen(bytes []byte, check int) error {
+	if len(bytes) < check {
+		return fmt.Errorf("invalid encoding: expected at least %d bytes, got %d", check, len(bytes))
+	}
+	return nil
+}
 
 //Does strings contain aString
 func containsString(strings []string, aString string) bool {
@@ -56,16 +65,12 @@ func getUintLittleEndian(b []byte) uint {
 	return n
 }
 
-func getSignedInt32LittleEndian(b []byte) int32 {
-	return int32(binary.LittleEndian.Uint32(b))
-}
-
 func get8Dot8FixedPointAsFloat(b []byte) float64 {
-	return float64(getUint16(b)) / 256.0
+	return float64(getUint16AsInt(b)) / 256.0
 }
 
 func get16Dot16FixedPointAsFloat(b []byte) float64 {
-	return float64(getUint32(b)) / 65536.0
+	return float64(getUint32AsInt64(b)) / 65536.0
 }
 
 func getFloat64(b []byte) float64 {
@@ -73,34 +78,46 @@ func getFloat64(b []byte) float64 {
 	return math.Float64frombits(i)
 }
 
-func getInt16(b []byte) int64 {
-	return int64(int16(binary.BigEndian.Uint16(b)))
+func getInt16AsInt(b []byte) int {
+	return int(int16(binary.BigEndian.Uint16(b)))
 }
 
-func getInt32(b []byte) int64 {
-	return int64(int32(binary.BigEndian.Uint32(b)))
+func getInt32AsInt(b []byte) int {
+	return int(int32(binary.BigEndian.Uint32(b)))
 }
 
-func getUint16(b []byte) int64 {
-	return int64(binary.BigEndian.Uint16(b))
+func getInt64(b []byte) int64 {
+	return int64(binary.BigEndian.Uint64(b))
 }
 
-func getUint24(b []byte) int64 {
+func getInt32LittleAsInt(b []byte) int {
+	return int(binary.LittleEndian.Uint32(b))
+}
+
+func getUint16AsInt(b []byte) int {
+	return int(binary.BigEndian.Uint16(b))
+}
+
+func getUint24AsInt(b []byte) int {
 	b2 := []byte{0}
 	b2 = append(b2, b...)
-	return int64(binary.BigEndian.Uint32(b2))
+	return int(binary.BigEndian.Uint32(b2))
 }
 
-func getUint32(b []byte) int64 {
+func getUint32AsInt64(b []byte) int64 {
 	return int64(binary.BigEndian.Uint32(b))
 }
 
-func readUint64LittleEndian(r io.Reader) (uint64, error) {
-	b, err := readBytes(r, 8)
-	if err != nil {
-		return 0, err
-	}
-	return binary.LittleEndian.Uint64(b), nil
+func getUint32Little(b []byte) uint32 {
+	return binary.LittleEndian.Uint32(b)
+}
+
+func getUint32LittleAsInt64(b []byte) int64 {
+	return int64(getUint32Little(b))
+}
+
+func getUint64(b []byte) uint64 {
+	return binary.BigEndian.Uint64(b)
 }
 
 func readBytes(r io.Reader, n uint) ([]byte, error) {
@@ -159,6 +176,19 @@ func readSignedInt32LittleEndian(r io.Reader) (int32, error) {
 		return 0, err
 	}
 	return int32(binary.LittleEndian.Uint32(b)), nil
+}
+
+func readInt64Little(r io.Reader) (int64, error) {
+	u, err := readUint64LittleEndian(r)
+	return int64(u), err
+}
+
+func readUint64LittleEndian(r io.Reader) (uint64, error) {
+	b, err := readBytes(r, 8)
+	if err != nil {
+		return 0, err
+	}
+	return binary.LittleEndian.Uint64(b), nil
 }
 
 func trimString(x string) string {

@@ -6,7 +6,6 @@ package yurit
 
 import (
 	"bytes"
-	"encoding/binary"
 	"errors"
 	"io"
 	"time"
@@ -15,17 +14,17 @@ import (
 //Vorbis common header types (which are always odd numbers)
 //https://xiph.org/vorbis/doc/Vorbis_I_spec.html#x1-620004.2.1
 const (
-	idType      int = 1
-	commentType int = 3
-	//setupType int = 5
+	vorbisPacketIDType      byte = 1
+	vorbisPacketCommentType byte = 3
+	//vorbisPacketSetupType byte = 5
 )
 
 //OggMetadata is a collection of metadata and other useful data from an Ogg
 //container that contains Vorbis encoded audio
 type OggMetadata struct {
 	fileType       FileType
-	vorbisIDHeader VorbisIDHeader
-	vorbisComment  VorbisComment
+	vorbisIDHeader vorbisIDHeader
+	vorbisComment  vorbisComment
 	totalGranules  int64
 }
 
@@ -36,29 +35,18 @@ type OggMetadata struct {
 func ReadOggTags(r io.ReadSeeker) (*OggMetadata, error) {
 	m := &OggMetadata{}
 
-	ih, err := readPackets(r)
+	idHeaderPacket, err := readPackets(r)
 	if err != nil {
 		return nil, err
 	}
-	ihr := bytes.NewReader(ih)
 	m.fileType = OGG
-
-	// First packet type is identification, type 1
-	t, err := readInt(ihr, 1)
-	if err != nil {
-		return nil, err
-	}
-	if t != idType {
+	if idHeaderPacket[0] != vorbisPacketIDType {
 		return nil, errors.New("expected 'vorbis' identification type 1")
 	}
-
-	// Seek and discard 6 bytes from common header
-	_, err = ihr.Seek(6, io.SeekCurrent)
-	if err != nil {
-		return nil, err
+	if string(idHeaderPacket[1:7]) != "vorbis" {
+		return nil, errors.New("expected 'vorbis' identifier in identification common header")
 	}
-
-	err = m.readVorbisIDHeader(ihr)
+	err = m.loadVorbisIDHeader(idHeaderPacket[7:])
 	if err != nil {
 		return nil, err
 	}
@@ -66,28 +54,18 @@ func ReadOggTags(r io.ReadSeeker) (*OggMetadata, error) {
 	// Read comment header packet. May include setup header packet, if it is on the
 	// same page. First audio packet is guaranteed to be on the separate page.
 	// See https://www.xiph.org/vorbis/doc/Vorbis_I_spec.html#x1-132000A.2
-	ch, err := readPackets(r)
+	commentHeaderPacket, err := readPackets(r)
 	if err != nil {
 		return nil, err
 	}
-	chr := bytes.NewReader(ch)
-
-	// First packet type is comment, type 3
-	t, err = readInt(chr, 1)
-	if err != nil {
-		return nil, err
-	}
-	if t != commentType {
+	//////
+	if commentHeaderPacket[0] != vorbisPacketCommentType {
 		return nil, errors.New("expected 'vorbis' comment type 3")
 	}
-
-	// Seek and discard 6 bytes from common header
-	_, err = chr.Seek(6, io.SeekCurrent)
-	if err != nil {
-		return nil, err
+	if string(commentHeaderPacket[1:7]) != "vorbis" {
+		return nil, errors.New("expected 'vorbis' identifier in comment common header")
 	}
-
-	err = m.readVorbisComment(chr)
+	err = m.loadVorbisComment(commentHeaderPacket[7:])
 	if err != nil {
 		return nil, err
 	}
@@ -96,46 +74,16 @@ func ReadOggTags(r io.ReadSeeker) (*OggMetadata, error) {
 	return m, err
 }
 
-//Reads the identification header from a Vorbis audio stream
-//See https://xiph.org/vorbis/doc/Vorbis_I_spec.html#x1-630004.2.2
-func (m *OggMetadata) readVorbisIDHeader(r io.ReadSeeker) error {
-	//Identification header is 23 bytes long
-	b, err := readBytes(r, 23)
-	if err != nil {
-		return err
-	}
-	version := getUintLittleEndian(b[0:4])
-	channels := b[4]
-	sampleRate := getUintLittleEndian(b[5:9])
-	bitrateMax := getSignedInt32LittleEndian(b[9:13])
-	bitrateNom := getSignedInt32LittleEndian(b[13:17])
-	bitrateMin := getSignedInt32LittleEndian(b[17:21])
-	//Use bits 0-3 of byte 21 to make a uint and use that as an exponent of 2
-	blockSize0 := 1 << binary.LittleEndian.Uint16([]byte{b[21] & 0x0F, 0})
-	//Use bits 4-7 of byte 21 to make a uint and use that as an exponent of 2
-	blockSize1 := 1 << binary.LittleEndian.Uint16([]byte{b[21] >> 4, 0})
-	//Las byte is the framing flag. Ignore.
-	m.vorbisIDHeader = VorbisIDHeader{
-		Version:        int(version),
-		Channels:       int(channels),
-		SampleRate:     int(sampleRate),
-		BitrateMax:     int(bitrateMax),
-		BitrateNominal: int(bitrateNom),
-		BitrateMin:     int(bitrateMin),
-		BlockSize0:     blockSize0,
-		BlockSize1:     blockSize1,
-	}
-	return nil
+func (m *OggMetadata) loadVorbisIDHeader(b []byte) error {
+	vc, err := processVorbisIDHeader(b)
+	m.vorbisIDHeader = vc
+	return err
 }
 
-//readVorbisComment reads a Vorbis comment into OggMetadata
-func (m *OggMetadata) readVorbisComment(r io.Reader) error {
-	comment, err := ReadVorbisComment(r)
-	if err != nil {
-		return err
-	}
-	m.vorbisComment = *comment
-	return nil
+func (m *OggMetadata) loadVorbisComment(b []byte) error {
+	vc, err := processVorbisComment(b)
+	m.vorbisComment = vc
+	return err
 }
 
 //getTotalGranules finds the last page in an Ogg container and extracts the
@@ -183,11 +131,11 @@ func (m *OggMetadata) getTotalGranules(r io.ReadSeeker) error {
 		return errors.New("Last page found is not marked as final page")
 	}
 	//Read final absolute granule position
-	absoluteGranulePositionUnsigned, err := readUint64LittleEndian(r)
+	absoluteGranulePosition, err := readInt64Little(r)
 	if err != nil {
 		return err
 	}
-	m.totalGranules = int64(absoluteGranulePositionUnsigned)
+	m.totalGranules = absoluteGranulePosition
 	return nil
 }
 
@@ -268,21 +216,7 @@ func (m OggMetadata) Artist() string {
 }
 
 func (m OggMetadata) AverageBitrate() int {
-	// Bitrate nominal represents the average bitrate if it is set
-	if m.vorbisIDHeader.BitrateNominal != 0 {
-		return m.vorbisIDHeader.BitrateNominal
-	}
-	// Bitrate nominal not set so we'll try to guess the average
-	if m.vorbisIDHeader.BitrateMax != 0 {
-		if m.vorbisIDHeader.BitrateMin != 0 {
-			// Bitrate nominal is not set, but max and min are. Take the average
-			return (m.vorbisIDHeader.BitrateMax + m.vorbisIDHeader.BitrateMin) / 2
-		}
-		// Bitrate max is the only value set, return it
-		return m.vorbisIDHeader.BitrateMax
-	}
-	// Else return bitrate min, even if it 0
-	return m.vorbisIDHeader.BitrateMin
+	return m.vorbisIDHeader.AverageBitrate()
 }
 
 func (m OggMetadata) Comment() string {
@@ -298,13 +232,7 @@ func (m OggMetadata) Disc() (int, int) {
 }
 
 func (m OggMetadata) Duration() time.Duration {
-	if m.vorbisIDHeader.SampleRate == 0 {
-		return time.Duration(0)
-	}
-	//Calculate track length by dividing total samples (granules) by sample rate
-	seconds := float64(m.totalGranules) / float64(m.vorbisIDHeader.SampleRate)
-	//convert to time.Duration
-	return time.Duration(seconds * float64(time.Second))
+	return m.vorbisIDHeader.Duration(m.totalGranules)
 }
 
 func (m OggMetadata) FileType() FileType {
@@ -345,29 +273,16 @@ func (m OggMetadata) Track() (int, int) {
 
 //VorbisComment returns the Vorbis comment information associated with this Ogg
 //file.
-func (m OggMetadata) VorbisComment() VorbisComment {
+func (m OggMetadata) VorbisComment() map[string]string {
 	return m.vorbisComment
 }
 
 //VorbisIDHeader returns the Vorbis identification header information associated
-//with this Ogg file. See the VorbisIDHeader struct type for more information.
-func (m OggMetadata) VorbisIDHeader() VorbisIDHeader {
+//with this Ogg file. See the vorbisIDHeader struct type for more information.
+func (m OggMetadata) VorbisIDHeader() map[string]interface{} {
 	return m.vorbisIDHeader
 }
 
 func (m OggMetadata) Year() int {
 	return m.vorbisComment.Year()
-}
-
-//VorbisIDHeader holds general information about a Vorbis audio stream.
-//https://xiph.org/vorbis/doc/Vorbis_I_spec.html#x1-630004.2.2
-type VorbisIDHeader struct {
-	Version        int
-	Channels       int
-	SampleRate     int //hertz
-	BitrateMax     int
-	BitrateNominal int
-	BitrateMin     int
-	BlockSize0     int
-	BlockSize1     int
 }

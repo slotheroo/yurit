@@ -17,9 +17,9 @@ const (
 	// Padding Block               1
 	// Application Block           2
 	// Seektable Block             3
-	// Cue Sheet Block             5
 	vorbisCommentBlock blockType = 4
-	pictureBlock       blockType = 6
+	// Cue Sheet Block             5
+	pictureBlock blockType = 6
 )
 
 //FLACMetadata is a collection of metadata and other useful data from a native
@@ -28,9 +28,9 @@ type FLACMetadata struct {
 	fileType      FileType
 	fileSize      int64
 	metadataSize  int64
-	streamInfo    StreamInfo
+	streamInfo    flacStreamInfo
 	pictures      []Picture
-	vorbisComment *VorbisComment
+	vorbisComment vorbisComment
 }
 
 // ReadFLACTags reads FLAC metadata from a FLAC file, returning the resulting
@@ -82,11 +82,24 @@ func (m *FLACMetadata) readFLACMetadataBlocks(r io.ReadSeeker) error {
 		m.metadataSize += int64(blockLen)
 
 		if blockType(blockHeader[0]) == streamInfoBlock {
-			err = m.readStreamInfoBlock(r)
+			b, err := readBytes(r, uint(blockLen))
+			if err != nil {
+				return err
+			}
+			err = m.loadStreamInfo(b)
 		} else if blockType(blockHeader[0]) == vorbisCommentBlock {
-			err = m.readVorbisComment(r)
+			//m.vorbisComment, err = readVorbisComment(r)
+			b, err := readBytes(r, uint(blockLen))
+			if err != nil {
+				return err
+			}
+			err = m.loadVorbisComment(b)
 		} else if blockType(blockHeader[0]) == pictureBlock {
-			err = m.readPictureBlock(r)
+			b, err := readBytes(r, uint(blockLen))
+			if err != nil {
+				return err
+			}
+			err = m.processLoadPictureBlock(b)
 		} else {
 			_, err = r.Seek(int64(blockLen), io.SeekCurrent)
 		}
@@ -97,57 +110,45 @@ func (m *FLACMetadata) readFLACMetadataBlocks(r io.ReadSeeker) error {
 	return nil
 }
 
-//readStreamInfoBlock reads the STREAMINFO block from a FLAC file
+//loadStreamInfo processes and loads a stream information from the corresponding
+//metadata block in a FLAC file
 //https://xiph.org/flac/format.html#metadata_block_streaminfo
-func (m *FLACMetadata) readStreamInfoBlock(r io.Reader) error {
-	block, err := readBytes(r, 34)
-	if err != nil {
-		return err
-	}
-	m.streamInfo.MinBlockSize = getInt(block[0:2])
-	m.streamInfo.MaxBlockSize = getInt(block[2:4])
-	m.streamInfo.MinFrameSize = getInt(block[4:7])
-	m.streamInfo.MaxFrameSize = getInt(block[7:10])
-	m.streamInfo.SampleRate = getInt(block[10:13]) >> 4
-	m.streamInfo.Channels = ((getInt(block[12:13]) >> 1) & 0x07) + 1
-	m.streamInfo.SampleBitrate = ((getInt(block[12:13]) & 0x01) << 4) + (getInt(block[13:14]) >> 4) + 1
-	m.streamInfo.TotalSamples = getInt(append([]byte{block[13] & 0x0F}, block[14:18]...))
-	m.streamInfo.MD5Signature = block[18:]
-	return nil
+func (m *FLACMetadata) loadStreamInfo(b []byte) error {
+	si, err := processStreamInfoBlock(b)
+	m.streamInfo = si
+	return err
 }
 
-//readVorbisComment reads a Vorbis comment from the corresponding metadata block
-//in a FLAC file
+//loadVorbisComment processes and loads a Vorbis comment from the corresponding
+//metadata block in a FLAC file
 //https://xiph.org/flac/format.html#metadata_block_vorbis_comment
-func (m *FLACMetadata) readVorbisComment(r io.Reader) error {
-	var err error
-	m.vorbisComment, err = ReadVorbisComment(r)
-	if err != nil {
-		return err
-	}
-	return nil
+func (m *FLACMetadata) loadVorbisComment(b []byte) error {
+	vc, err := processVorbisComment(b)
+	m.vorbisComment = vc
+	return err
 }
 
-//readPictureBlock reads a FLAC picture metadata block into FLACMetadata
+//processLoadPictureBlock processes a FLAC picture metadata block and loads the
+//picture into the FLACMetadata.
 //https://xiph.org/flac/format.html#metadata_block_picture
-func (m *FLACMetadata) readPictureBlock(r io.Reader) error {
-	b, err := readInt(r, 4)
-	if err != nil {
-		return err
+func (m *FLACMetadata) processLoadPictureBlock(b []byte) error {
+	if len(b) < 32 {
+		return fmt.Errorf("invalid encoding: expected at least %d bytes, got %d", 32, len(b))
 	}
-	pictureType, ok := pictureTypes[byte(b)]
+	pictureTypeBytes := b[0:4]
+	offset := 4
+	pictureType, ok := pictureTypes[pictureTypeBytes[3]]
 	if !ok {
-		return fmt.Errorf("invalid picture type: %v", b)
-	}
-	mimeLen, err := readUint(r, 4)
-	if err != nil {
-		return err
-	}
-	mime, err := readString(r, mimeLen)
-	if err != nil {
-		return err
+		return fmt.Errorf("invalid picture type: %v", pictureTypeBytes)
 	}
 
+	mimeLen := int(getUint32AsInt64(b[offset : offset+4])) //mime length
+	offset += 4
+	if len(b) < 32+mimeLen {
+		return fmt.Errorf("invalid encoding: expected at least %d bytes, got %d", 32+mimeLen, len(b))
+	}
+	mime := string(b[offset : offset+mimeLen])
+	offset += mimeLen
 	ext := ""
 	switch mime {
 	case "image/jpeg":
@@ -158,42 +159,23 @@ func (m *FLACMetadata) readPictureBlock(r io.Reader) error {
 		ext = "gif"
 	}
 
-	descLen, err := readUint(r, 4)
-	if err != nil {
-		return err
+	descLen := int(getUint32AsInt64(b[offset : offset+4])) //description length
+	offset += 4
+	if len(b) < 32+mimeLen+descLen {
+		return fmt.Errorf("invalid encoding: expected at least %d bytes, got %d", 32+mimeLen+descLen, len(b))
 	}
-	desc, err := readString(r, descLen)
-	if err != nil {
-		return err
-	}
+	desc := string(b[offset : offset+descLen])
+	offset += descLen
 
-	// We skip width <32>, height <32>, colorDepth <32>, colorsUsed <32>
-	_, err = readInt(r, 4) // width
-	if err != nil {
-		return err
-	}
-	_, err = readInt(r, 4) // height
-	if err != nil {
-		return err
-	}
-	_, err = readInt(r, 4) // color depth
-	if err != nil {
-		return err
-	}
-	_, err = readInt(r, 4) // colors used
-	if err != nil {
-		return err
-	}
+	// We skip 16 bytes: width <32>, height <32>, colorDepth <32>, colorsUsed <32>
+	offset += 16
 
-	dataLen, err := readInt(r, 4)
-	if err != nil {
-		return err
+	dataLen := int(getUint32AsInt64(b[offset : offset+4])) //data length
+	offset += 4
+	if len(b) < 32+mimeLen+descLen+dataLen {
+		return fmt.Errorf("invalid encoding: expected at least %d bytes, got %d", 32+mimeLen+descLen+dataLen, len(b))
 	}
-	data := make([]byte, dataLen)
-	_, err = io.ReadFull(r, data)
-	if err != nil {
-		return err
-	}
+	data := b[offset : offset+dataLen]
 
 	picture := Picture{
 		Ext:         ext,
@@ -267,13 +249,7 @@ func (m FLACMetadata) Disc() (int, int) {
 }
 
 func (m FLACMetadata) Duration() time.Duration {
-	if m.streamInfo.SampleRate == 0 {
-		return time.Duration(0)
-	}
-	//Calculate track length by dividing total samples by sample rate
-	seconds := float64(m.streamInfo.TotalSamples) / float64(m.streamInfo.SampleRate)
-	//convert to time.Duration
-	return time.Duration(seconds * float64(time.Second))
+	return m.streamInfo.Duration()
 }
 
 func (m FLACMetadata) FileType() FileType {
@@ -323,12 +299,12 @@ func (m FLACMetadata) Pictures() []Picture {
 
 //SampleRate returns the SampleRate from a FLAC file's stream info block
 func (m FLACMetadata) SampleRate() int {
-	return m.streamInfo.SampleRate
+	return m.streamInfo.SampleRate()
 }
 
 //StreamInfo returns the data extracted from a FLAC file's stream info metadata
 //block. See the StreamInfo struct type for more information.
-func (m FLACMetadata) StreamInfo() StreamInfo {
+func (m FLACMetadata) StreamInfo() map[string]interface{} {
 	return m.streamInfo
 }
 
@@ -349,7 +325,7 @@ func (m FLACMetadata) Track() (int, int) {
 //VorbisComment returns the information found in a FLAC file's Vorbis comment
 //metadata block. The data in this block is sometimes also referred to as FLAC
 //tags.
-func (m FLACMetadata) VorbisComment() *VorbisComment {
+func (m FLACMetadata) VorbisComment() map[string]string {
 	return m.vorbisComment
 }
 
@@ -358,19 +334,4 @@ func (m FLACMetadata) Year() int {
 		return m.vorbisComment.Year()
 	}
 	return 0
-}
-
-//StreamInfo holds general information about the FLAC audio stream and is
-//extracted from a FLAC file's STREAMINFO metadata block
-//https://xiph.org/flac/format.html#metadata_block_streaminfo
-type StreamInfo struct {
-	MinBlockSize  int //Min block size in samples
-	MaxBlockSize  int //Max block size in samples
-	MinFrameSize  int //Min frame size in bytes
-	MaxFrameSize  int //Max frame size in bytes
-	SampleRate    int //Sample rate in hertz
-	Channels      int //Number of channels in the stream
-	SampleBitrate int //Bits per sample
-	TotalSamples  int //Total number of samples in the stream
-	MD5Signature  []byte
 }
