@@ -4,13 +4,11 @@
 
 package yurit
 
-/*
 import (
 	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"io"
 	"strconv"
 	"strings"
 	"unicode/utf16"
@@ -304,7 +302,6 @@ type id3v2FrameFlags struct {
 	TagAlterPreservation  bool
 	FileAlterPreservation bool
 	ReadOnly              bool
-
 	// Format (ID3 2.3.0 and 2.4.0)
 	Compression   bool
 	Encryption    bool
@@ -312,267 +309,292 @@ type id3v2FrameFlags struct {
 	// ID3 2.4.0 only (see http://id3.org/id3v2.4.0-structure sec 4.1)
 	Unsynchronisation   bool
 	DataLengthIndicator bool
+	// Optional Extended Information (ID3 2.3 and 2.4)
+	DataLength       *int
+	EncryptionMethod *byte
+	GroupIdentifier  *byte
 }
 
-func readID3v23FrameFlags(r io.Reader) (*id3v2FrameFlags, error) {
-	b, err := readBytes(r, 2)
-	if err != nil {
-		return nil, err
+func (f *id3v2FrameFlags) ExtendedSize() int {
+	s := 0
+	if f.DataLength != nil {
+		s += 4
+	}
+	if f.EncryptionMethod != nil {
+		s += 1
+	}
+	if f.GroupIdentifier != nil {
+		s += 1
+	}
+	return s
+}
+
+func processID3v2_3FrameFlags(buf *bytes.Buffer) (*id3v2FrameFlags, error) {
+	flagsSize := 2
+	b := buf.Next(flagsSize)
+	if len(b) < flagsSize {
+		return nil, fmt.Errorf("invalid ID3v2_3 frame flag encoding: expected at least %d bytes, got %d", flagsSize, len(b))
 	}
 
-	msg := b[0]
-	fmt := b[1]
-
-	return &id3v2FrameFlags{
-		TagAlterPreservation:  getBit(msg, 7),
-		FileAlterPreservation: getBit(msg, 6),
-		ReadOnly:              getBit(msg, 5),
-		Compression:           getBit(fmt, 7),
-		Encryption:            getBit(fmt, 6),
-		GroupIdentity:         getBit(fmt, 5),
-	}, nil
-}
-
-func readID3v24FrameFlags(r io.Reader) (*id3v2FrameFlags, error) {
-	b, err := readBytes(r, 2)
-	if err != nil {
-		return nil, err
+	flags := id3v2FrameFlags{
+		TagAlterPreservation:  getBit(b[0], 7),
+		FileAlterPreservation: getBit(b[0], 6),
+		ReadOnly:              getBit(b[0], 5),
+		Compression:           getBit(b[1], 7),
+		Encryption:            getBit(b[1], 6),
+		GroupIdentity:         getBit(b[1], 5),
 	}
 
-	msg := b[0]
-	fmt := b[1]
+	if flags.Compression {
+		dataLengthSize := 4
+		b = buf.Next(dataLengthSize)
+		if len(b) < dataLengthSize {
+			return nil, fmt.Errorf("invalid ID3v2_3 data length encoding: expected at least %d bytes, got %d", dataLengthSize, len(b))
+		}
+		s := getInt(b)
+		flags.DataLength = &s
+	}
+	if flags.Encryption {
+		encryptionMethodSize := 1
+		b = buf.Next(encryptionMethodSize)
+		if len(b) < encryptionMethodSize {
+			return nil, fmt.Errorf("invalid ID3v2_3 encryption method encoding: expected at least %d bytes, got %d", encryptionMethodSize, len(b))
+		}
+		flags.EncryptionMethod = &b[0]
+	}
+	if flags.GroupIdentity {
+		groupIdentifierSize := 1
+		b = buf.Next(groupIdentifierSize)
+		if len(b) < groupIdentifierSize {
+			return nil, fmt.Errorf("invalid ID3v2_3 group identifier encoding: expected at least %d bytes, got %d", groupIdentifierSize, len(b))
+		}
+		flags.GroupIdentifier = &b[0]
+	}
 
-	return &id3v2FrameFlags{
-		TagAlterPreservation:  getBit(msg, 6),
-		FileAlterPreservation: getBit(msg, 5),
-		ReadOnly:              getBit(msg, 4),
-		GroupIdentity:         getBit(fmt, 6),
-		Compression:           getBit(fmt, 3),
-		Encryption:            getBit(fmt, 2),
-		Unsynchronisation:     getBit(fmt, 1),
-		DataLengthIndicator:   getBit(fmt, 0),
-	}, nil
-
+	return &flags, nil
 }
 
-func readID3v2_2FrameHeader(r io.Reader) (name string, size uint, headerSize uint, err error) {
-	name, err = readString(r, 3)
-	if err != nil {
+func processID3v2_4FrameFlags(buf *bytes.Buffer) (*id3v2FrameFlags, error) {
+	flagsSize := 2
+	b := buf.Next(flagsSize)
+	if len(b) < flagsSize {
+		return nil, fmt.Errorf("invalid ID3v2_4 frame flag encoding: expected at least %d bytes, got %d", flagsSize, len(b))
+	}
+
+	flags := id3v2FrameFlags{
+		TagAlterPreservation:  getBit(b[0], 6),
+		FileAlterPreservation: getBit(b[0], 5),
+		ReadOnly:              getBit(b[0], 4),
+		GroupIdentity:         getBit(b[1], 6),
+		Compression:           getBit(b[1], 3),
+		Encryption:            getBit(b[1], 2),
+		Unsynchronisation:     getBit(b[1], 1),
+		DataLengthIndicator:   getBit(b[1], 0),
+	}
+
+	if flags.GroupIdentity {
+		groupIdentifierSize := 1
+		b = buf.Next(groupIdentifierSize)
+		if len(b) < groupIdentifierSize {
+			return nil, fmt.Errorf("invalid ID3v2_4 group identifier encoding: expected at least %d bytes, got %d", groupIdentifierSize, len(b))
+		}
+		flags.GroupIdentifier = &b[0]
+	}
+	if flags.DataLengthIndicator {
+		dataLengthSize := 4
+		b = buf.Next(dataLengthSize)
+		if len(b) < dataLengthSize {
+			return nil, fmt.Errorf("invalid ID3v2_4 data length encoding: expected at least %d bytes, got %d", dataLengthSize, len(b))
+		}
+		s := get7BitChunkedInt(b)
+		flags.DataLength = &s
+	}
+	if flags.Encryption {
+		encryptionMethodSize := 1
+		b = buf.Next(encryptionMethodSize)
+		if len(b) < encryptionMethodSize {
+			return nil, fmt.Errorf("invalid ID3v2_4 encryption method encoding: expected at least %d bytes, got %d", encryptionMethodSize, len(b))
+		}
+		flags.EncryptionMethod = &b[0]
+	}
+
+	return &flags, nil
+}
+
+func processID3v2_2FrameHeader(buf *bytes.Buffer) (name string, size int, err error) {
+	headerSize := 6
+	b := buf.Next(headerSize)
+	if len(b) < headerSize {
+		err = fmt.Errorf("invalid ID3v2_2 frame header encoding: expected at least %d bytes, got %d", headerSize, len(b))
 		return
 	}
-	size, err = readUint(r, 3)
-	if err != nil {
-		return
-	}
-	headerSize = 6
+	name = getString(b[0:3])
+	size = getInt(b[3:])
 	return
 }
 
-func readID3v2_3FrameHeader(r io.Reader) (name string, size uint, headerSize uint, err error) {
-	name, err = readString(r, 4)
-	if err != nil {
+func processID3v2_3FrameHeader(buf *bytes.Buffer) (name string, size int, err error) {
+	headerSize := 8
+	b := buf.Next(headerSize)
+	if len(b) < headerSize {
+		err = fmt.Errorf("invalid ID3v2_3 frame header encoding: expected at least %d bytes, got %d", headerSize, len(b))
 		return
 	}
-	size, err = readUint(r, 4)
-	if err != nil {
-		return
-	}
-	headerSize = 8
+	name = getString(b[0:4])
+	size = getInt(b[4:])
 	return
 }
 
-func readID3v2_4FrameHeader(r io.Reader) (name string, size uint, headerSize uint, err error) {
-	name, err = readString(r, 4)
-	if err != nil {
+func processID3v2_4FrameHeader(buf *bytes.Buffer) (name string, size int, err error) {
+	headerSize := 8
+	b := buf.Next(headerSize)
+	if len(b) < headerSize {
+		err = fmt.Errorf("invalid ID3v2_4 frame header encoding: expected at least %d bytes, got %d", headerSize, len(b))
 		return
 	}
-	size, err = read7BitChunkedUint(r, 4)
-	if err != nil {
-		return
-	}
-	headerSize = 8
+	name = getString(b[0:4])
+	size = get7BitChunkedInt(b[4:])
 	return
 }
 
-//TODO READ ENTIRE TAG THEN PROCESS FRAMES
-
-// readID3v2Frames reads ID3v2 frames from the given reader using the id3v2Header.
-func readID3v2Frames(r io.Reader, offset uint, h *id3v2Header) (map[string]interface{}, error) {
+// processID3v2Frames extracts ID3v2 frames from the given bytes using the id3v2Header.
+func processID3v2Frames(b []byte, h *id3v2Header) (map[string]interface{}, error) {
 	result := make(map[string]interface{})
 
-	for offset < h.Size {
+	//If this is v2.3 and unsync byte is set, unsynchronize everything
+	//N.B. v2.4 is unsynchronized on a frame-by-frame basis, even when unsync byte is set.
+	if h.version == ID3v2_3 && h.unsynchronization {
+		b = unsynchronize(b)
+	}
+
+	buf := bytes.NewBuffer(b)
+	//Continue if there is remaining buffer and next 4 or fewer chars are not zero
+	for !areZero(bufferPeek(buf, 4)) {
 		var err error
 		var name string
-		var size, headerSize uint
+		var size int
 		var flags *id3v2FrameFlags
 
-		switch h.Version {
-		case ID3v2_2:
-			name, size, headerSize, err = readID3v2_2FrameHeader(r)
-
-		case ID3v2_3:
-			name, size, headerSize, err = readID3v2_3FrameHeader(r)
+		if h.version == ID3v2_2 {
+			name, size, err = processID3v2_2FrameHeader(buf)
 			if err != nil {
 				return nil, err
 			}
-			flags, err = readID3v23FrameFlags(r)
-			headerSize += 2
-
-		case ID3v2_4:
-			name, size, headerSize, err = readID3v2_4FrameHeader(r)
+		} else if h.version == ID3v2_3 {
+			name, size, err = processID3v2_3FrameHeader(buf)
 			if err != nil {
 				return nil, err
 			}
-			flags, err = readID3v24FrameFlags(r)
-			headerSize += 2
+			flags, err = processID3v2_3FrameFlags(buf)
+			if err != nil {
+				return nil, err
+			}
+		} else if h.version == ID3v2_4 {
+			name, size, err = processID3v2_4FrameHeader(buf)
+			if err != nil {
+				return nil, err
+			}
+			flags, err = processID3v2_4FrameFlags(buf)
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			return nil, fmt.Errorf("Unknown ID3v2 version: %v, expected: 2, 3 or 4", h.version)
 		}
-
-		if err != nil {
-			return nil, err
-		}
-
-		// FIXME: Do we still need this?
-		// if size=0, we certainly are in a padding zone. ignore the rest of
-		// the tags
-		if size == 0 {
-			break
-		}
-
-		offset += headerSize + size
-
 		// Avoid corrupted padding (see http://id3.org/Compliance%20Issues).
-		if !validID3Frame(h.Version, name) && offset > h.Size {
+		if !validID3Frame(h.version, name) {
 			break
 		}
 
-		if flags != nil {
-			if flags.Compression {
-				_, err = read7BitChunkedUint(r, 4) // read 4
-				if err != nil {
-					return nil, err
-				}
-				size -= 4
-			}
-
-			if flags.Encryption {
-				_, err = readBytes(r, 1) // read 1 byte of encryption method
-				if err != nil {
-					return nil, err
-				}
-				size--
-			}
-		}
-
-		b, err := readBytes(r, size)
-		if err != nil {
-			return nil, err
-		}
+		b = buf.Next(size - flags.ExtendedSize())
 
 		// There can be multiple tag with the same name. Append a number to the
 		// name if there is more than one.
-		rawName := name
-		if _, ok := result[rawName]; ok {
+		modName := name
+		if _, ok := result[modName]; ok {
 			for i := 0; ok; i++ {
-				rawName = name + "_" + strconv.Itoa(i)
-				_, ok = result[rawName]
+				modName = name + "_" + strconv.Itoa(i)
+				_, ok = result[modName]
 			}
 		}
 
-		switch {
-		case name == "TXXX" || name == "TXX":
-			t, err := readTextWithDescrFrame(b, false, true) // no lang, but enc
+		if name == "TXXX" || name == "TXX" {
+			t, err := getTextWithDescrFrame(b, false, true) // no lang, but enc
 			if err != nil {
 				return nil, err
 			}
-			result[rawName] = t
-
-		case name[0] == 'T':
-			txt, err := readTFrame(b)
+			result[modName] = t
+		} else if name[0] == 'T' {
+			txt, err := getTFrame(b)
 			if err != nil {
 				return nil, err
 			}
-			result[rawName] = txt
-
-		case name == "UFID" || name == "UFI":
-			t, err := readUFID(b)
+			result[modName] = txt
+		} else if name == "UFID" || name == "UFI" {
+			t, err := getUFID(b)
 			if err != nil {
 				return nil, err
 			}
-			result[rawName] = t
-
-		case name == "WXXX" || name == "WXX":
-			t, err := readTextWithDescrFrame(b, false, false) // no lang, no enc
+			result[modName] = t
+		} else if name == "WXXX" || name == "WXX" {
+			t, err := getTextWithDescrFrame(b, false, false) // no lang, no enc
 			if err != nil {
 				return nil, err
 			}
-			result[rawName] = t
-
-		case name[0] == 'W':
-			txt, err := readWFrame(b)
+			result[modName] = t
+		} else if name[0] == 'W' {
+			txt, err := getWFrame(b)
 			if err != nil {
 				return nil, err
 			}
-			result[rawName] = txt
-
-		case name == "COMM" || name == "COM" || name == "USLT" || name == "ULT":
-			t, err := readTextWithDescrFrame(b, true, true) // both lang and enc
+			result[modName] = txt
+		} else if name == "COMM" || name == "COM" || name == "USLT" || name == "ULT" {
+			t, err := getTextWithDescrFrame(b, true, true) // both lang and enc
 			if err != nil {
 				return nil, err
 			}
-			result[rawName] = t
-
-		case name == "APIC":
-			p, err := readAPICFrame(b)
+			result[modName] = t
+		} else if name == "APIC" {
+			p, err := getAPICFrame(b)
 			if err != nil {
 				return nil, err
 			}
-			result[rawName] = p
-
-		case name == "PIC":
-			p, err := readPICFrame(b)
+			result[modName] = p
+		} else if name == "PIC" {
+			p, err := getPICFrame(b)
 			if err != nil {
 				return nil, err
 			}
-			result[rawName] = p
-
-		default:
-			result[rawName] = b
+			result[modName] = p
+		} else {
+			result[modName] = b
 		}
 	}
 	return result, nil
 }
 
-type unsynchroniser struct {
-	io.Reader
-	ff bool
-}
-
-// filter io.Reader which skip the Unsynchronisation bytes
-func (r *unsynchroniser) Read(p []byte) (int, error) {
-	b := make([]byte, 1)
+func unsynchronize(b []byte) []byte {
+	var lastWasFF bool = false
 	i := 0
-	for i < len(p) {
-		if n, err := r.Reader.Read(b); err != nil || n == 0 {
-			return i, err
-		}
-		if r.ff && b[0] == 0x00 {
-			r.ff = false
+	for i < len(b) {
+		if lastWasFF && b[i] == 0x00 {
+			b = append(b[:i], b[i+1:]...)
+			lastWasFF = false
 			continue
 		}
-		p[i] = b[0]
+		lastWasFF = b[i] == 0xFF
 		i++
-		r.ff = (b[0] == 0xFF)
 	}
-	return i, nil
+	return b
 }
 
-func readWFrame(b []byte) (string, error) {
+func getWFrame(b []byte) (string, error) {
 	// Frame text is always encoded in ISO-8859-1
 	b = append([]byte{0}, b...)
-	return readTFrame(b)
+	return getTFrame(b)
 }
 
-func readTFrame(b []byte) (string, error) {
+func getTFrame(b []byte) (string, error) {
 	if len(b) == 0 {
 		return "", nil
 	}
@@ -710,7 +732,7 @@ func (t Comm) String() string {
 // -- Header
 // <Header for 'Unsynchronised lyrics/text transcription', ID: "USLT">
 // <Header for 'Comment', ID: "COMM">
-// -- readTextWithDescrFrame(data, true, true)
+// -- getTextWithDescrFrame(data, true, true)
 // Text encoding       $xx
 // Language            $xx xx xx
 // Content descriptor  <text string according to encoding> $00 (00)
@@ -718,11 +740,11 @@ func (t Comm) String() string {
 // -- Header
 // <Header for         'User defined text information frame', ID: "TXXX">
 // <Header for         'User defined URL link frame', ID: "WXXX">
-// -- readTextWithDescrFrame(data, false, <isDataEncoded>)
+// -- getTextWithDescrFrame(data, false, <isDataEncoded>)
 // Text encoding       $xx
 // Description         <text string according to encoding> $00 (00)
 // Value               <text string according to encoding>
-func readTextWithDescrFrame(b []byte, hasLang bool, encoded bool) (*Comm, error) {
+func getTextWithDescrFrame(b []byte, hasLang bool, encoded bool) (*Comm, error) {
 	enc := b[0]
 	b = b[1:]
 
@@ -770,7 +792,7 @@ func (u UFID) String() string {
 	return fmt.Sprintf("%v (%v)", u.Provider, string(u.Identifier))
 }
 
-func readUFID(b []byte) (*UFID, error) {
+func getUFID(b []byte) (*UFID, error) {
 	result := bytes.SplitN(b, singleZero, 2)
 	if len(result) != 2 {
 		return nil, errors.New("expected to split UFID data into 2 pieces")
@@ -825,13 +847,13 @@ func (p Picture) String() string {
 // -- Header
 // Attached picture   "PIC"
 // Frame size         $xx xx xx
-// -- readPICFrame
+// -- getPICFrame
 // Text encoding      $xx
 // Image format       $xx xx xx
 // Picture type       $xx
 // Description        <textstring> $00 (00)
 // Picture data       <binary data>
-func readPICFrame(b []byte) (*Picture, error) {
+func getPICFrame(b []byte) (*Picture, error) {
 	enc := b[0]
 	ext := string(b[1:4])
 	picType := b[4]
@@ -865,13 +887,13 @@ func readPICFrame(b []byte) (*Picture, error) {
 // IDv2.{3,4}
 // -- Header
 // <Header for 'Attached picture', ID: "APIC">
-// -- readAPICFrame
+// -- getAPICFrame
 // Text encoding   $xx
 // MIME type       <text string> $00
 // Picture type    $xx
 // Description     <text string according to encoding> $00 (00)
 // Picture data    <binary data>
-func readAPICFrame(b []byte) (*Picture, error) {
+func getAPICFrame(b []byte) (*Picture, error) {
 	enc := b[0]
 	mimeDataSplit := bytes.SplitN(b[1:], singleZero, 2)
 	mimeType := string(mimeDataSplit[0])
@@ -907,4 +929,3 @@ func readAPICFrame(b []byte) (*Picture, error) {
 		Data:        descDataSplit[1],
 	}, nil
 }
-*/

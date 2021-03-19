@@ -23,7 +23,7 @@ func readVorbisComment(r io.Reader) (vorbisComment, error) {
 	var vc = vorbisComment{}
 
 	//Get the size of the vendor field then read it into our struct
-	vendorLen, err := readUint32LittleEndian(r)
+	vendorLen, err := readUint32Little(r)
 	if err != nil {
 		return nil, err
 	}
@@ -34,14 +34,14 @@ func readVorbisComment(r io.Reader) (vorbisComment, error) {
 	vc["vendor"] = vendor
 
 	//Get the length of the comments section
-	commentsLen, err := readUint32LittleEndian(r)
+	commentsLen, err := readUint32Little(r)
 	if err != nil {
 		return nil, err
 	}
 
 	//Iterate and read in each comment
 	for i := uint32(0); i < commentsLen; i++ {
-		l, err := readUint32LittleEndian(r)
+		l, err := readUint32Little(r)
 		if err != nil {
 			return nil, err
 		}
@@ -67,25 +67,25 @@ func processVorbisComment(b []byte) (vorbisComment, error) {
 	if err := checkLen(b, 4); err != nil {
 		return nil, err
 	}
-	vendorLen := getUint32Little(b[0:4])
-	if err := checkLen(b, int(4+vendorLen)); err != nil {
+	vendorLen := getUint32LittleAsInt64(b[0:4])
+	if err := checkLen(b, uint(4+vendorLen)); err != nil {
 		return nil, err
 	}
 	vc["vendor"] = string(b[4 : 4+vendorLen])
 
 	//Get the length of the comments section
-	if err := checkLen(b, int(8+vendorLen)); err != nil {
+	if err := checkLen(b, uint(8+vendorLen)); err != nil {
 		return nil, err
 	}
-	commentsLen := getUint32Little(b[4+vendorLen : 8+vendorLen])
+	commentsLen := getUint32LittleAsInt64(b[4+vendorLen : 8+vendorLen])
 	offset := 8 + vendorLen
 	//Iterate and read in each comment
-	for i := uint32(0); i < commentsLen; i++ {
-		if err := checkLen(b, int(offset+4)); err != nil {
+	for i := int64(0); i < commentsLen; i++ {
+		if err := checkLen(b, uint(offset+4)); err != nil {
 			return nil, err
 		}
-		l := getUint32Little(b[offset : offset+4])
-		if err := checkLen(b, int(offset+4+l)); err != nil {
+		l := getUint32LittleAsInt64(b[offset : offset+4])
+		if err := checkLen(b, uint(offset+4+l)); err != nil {
 			return nil, err
 		}
 		s := string(b[offset+4 : offset+4+l])

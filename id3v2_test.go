@@ -6,9 +6,43 @@ package yurit
 
 import (
 	"bytes"
+	"io"
+	"os"
 	"reflect"
 	"testing"
 )
+
+func BenchmarkUnsynchroniser(b *testing.B) {
+	f, _ := os.Open("./testdata/with_tags/sample.id3v24.mp3")
+	defer f.Close()
+	fi, _ := f.Stat()
+	for n := 0; n < b.N; n++ {
+		ur := &unsynchroniser{Reader: f}
+		readBytes(ur, uint(fi.Size()))
+		f.Seek(0, io.SeekStart)
+	}
+}
+
+func BenchmarkUnsynchroniser2(b *testing.B) {
+	f, _ := os.Open("./testdata/with_tags/sample.id3v24.mp3")
+	defer f.Close()
+	fi, _ := f.Stat()
+	for n := 0; n < b.N; n++ {
+		b, _ := readBytes(f, uint(fi.Size()))
+		b = unsynchronize(b)
+		f.Seek(0, io.SeekStart)
+	}
+}
+
+func BenchmarkRead(b *testing.B) {
+	f, _ := os.Open("./testdata/with_tags/sample.id3v24.mp3")
+	defer f.Close()
+	fi, _ := f.Stat()
+	for n := 0; n < b.N; n++ {
+		readBytes(f, uint(fi.Size()))
+		f.Seek(0, io.SeekStart)
+	}
+}
 
 func TestUnsynchroniser(t *testing.T) {
 	tests := []struct {

@@ -9,31 +9,32 @@ import (
 //MP3Metadata is a collection of metadata from an mp3 file including tags and
 //frame information.
 type MP3Metadata struct {
-	ID3v2Tags   *ID3v2Tags
+	id3v2Tags   *id3v2Tags
 	fileSize    int64
-	FrameHeader MP3FrameHeader
-	FrameData   MP3FrameData
-	ID3v1Tags   *ID3v1Tags
+	frameHeader mpegFrameHeader
+	id3v1tags   id3v1tags
+	xingHeader  mp3XingHeader
 }
 
 func ReadFromMP3(file *os.File) (*MP3Metadata, error) {
 	var (
-		frameHeader MP3FrameHeader
-		frameData   MP3FrameData
+		m MP3Metadata
 	)
 	stat, err := file.Stat()
 	if err != nil {
 		return nil, err
 	}
+	m.fileSize = stat.Size()
 	//Extract any ID3v2 tags, if any
 	id3v2, err := ReadID3v2Tags(file)
 	if err != nil {
 		return nil, err
 	}
+	m.id3v2Tags = id3v2
 	//Seek to the end of the ID3v2 tags, or the beginning of the file if there are
 	//no tags.
 	if id3v2 != nil {
-		_, err = file.Seek(int64(id3v2.Header.Size), io.SeekStart)
+		_, err = file.Seek(int64(id3v2.header.size), io.SeekStart)
 		if err != nil {
 			return nil, err
 		}
@@ -43,13 +44,9 @@ func ReadFromMP3(file *os.File) (*MP3Metadata, error) {
 			return nil, err
 		}
 	}
-	//Find and read the first encountered frame header
-	frameHeader, err = readMP3FrameHeader(file)
-	if err != nil {
-		return nil, err
-	}
-	//Read frame data immediately after header, seek should be in correct position
-	frameData, err = readMP3FrameData(file, frameHeader)
+	//Find and read the first encountered frame header and look for xing header
+	//in the data for the first frame
+	err = m.readFrame(file)
 	if err != nil {
 		return nil, err
 	}
@@ -58,46 +55,83 @@ func ReadFromMP3(file *os.File) (*MP3Metadata, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	m := MP3Metadata{ID3v2Tags: id3v2, fileSize: stat.Size(), FrameHeader: frameHeader, FrameData: frameData, ID3v1Tags: id3v1}
+	m.id3v1tags = id3v1
 	return &m, nil
+}
+
+func (m *MP3Metadata) readFrame(r io.ReadSeeker) error {
+	frameHeader, err := readMPEGFrameHeader(r)
+	if err != nil {
+		return err
+	}
+	m.frameHeader = frameHeader
+	_, err = r.Seek(int64(m.frameHeader.sideInfoLength()), io.SeekCurrent)
+	if err != nil {
+		return err
+	}
+	b, err := readBytes(r, 6)
+	if err != nil {
+		return err
+	}
+	var (
+		getXing bool  = false
+		goBack  int64 = -6
+	)
+	//Look in two possible locations for Xing/Info header id
+	if string(b[0:4]) == "Xing" || string(b[0:4]) == "Info" {
+		getXing = true
+	} else if string(b[2:6]) == "Xing" || string(b[2:6]) == "Info" {
+		getXing = true
+		goBack = -4
+	}
+	if getXing {
+		//If found go back to beginning of Xing header and grab the data
+		r.Seek(goBack, io.SeekCurrent)
+		xingHeader, err := readMP3XingHeader(r)
+		if err != nil {
+			return err
+		}
+
+		m.xingHeader = xingHeader
+	}
+	return err
 }
 
 // return the approximate size of audio data in bytes
 func (m MP3Metadata) approximateAudioSize() int64 {
 	var v1TagSize int64 = 0
 	var v2TagSize int64 = 0
-	if m.ID3v1Tags != nil {
+	if m.id3v1tags != nil {
 		v1TagSize = 128
 	}
-	if m.ID3v2Tags != nil {
-		v2TagSize = 10 + int64(m.ID3v2Tags.Header.Size)
+	if m.id3v2Tags != nil {
+		v2TagSize = 10 + int64(m.id3v2Tags.header.size)
 	}
 	return m.fileSize - v1TagSize - v2TagSize
 }
 
 func (m MP3Metadata) Album() string {
-	if m.ID3v2Tags != nil {
-		return m.ID3v2Tags.Album()
-	} else if m.ID3v1Tags != nil {
-		return m.ID3v1Tags.Album()
+	if m.id3v2Tags != nil {
+		return m.id3v2Tags.Album()
+	} else if m.id3v1tags != nil {
+		return m.id3v1tags.Album()
 	}
 	return ""
 }
 
 func (m MP3Metadata) AlbumArtist() string {
-	if m.ID3v2Tags != nil {
-		return m.ID3v2Tags.AlbumArtist()
+	if m.id3v2Tags != nil {
+		return m.id3v2Tags.AlbumArtist()
 	}
 	//No equivalent value for ID3v1
 	return ""
 }
 
 func (m MP3Metadata) Artist() string {
-	if m.ID3v2Tags != nil {
-		return m.ID3v2Tags.Artist()
-	} else if m.ID3v1Tags != nil {
-		return m.ID3v1Tags.Artist()
+	if m.id3v2Tags != nil {
+		return m.id3v2Tags.Artist()
+	} else if m.id3v1tags != nil {
+		return m.id3v1tags.Artist()
 	}
 	return ""
 }
@@ -105,8 +139,8 @@ func (m MP3Metadata) Artist() string {
 func (m MP3Metadata) AverageBitrate() int {
 	// If we have a XingHeader with the Xing ID then assume VBR and calculate the
 	// average bitrate
-	if m.FrameData.XingHeader != nil {
-		if m.FrameData.XingHeader.ID == XING_XING_ID {
+	if m.xingHeader != nil {
+		if m.xingHeader.ID() == "Xing" {
 			durationInSeconds := m.Duration().Seconds()
 			if durationInSeconds == 0 {
 				return 0
@@ -114,8 +148,8 @@ func (m MP3Metadata) AverageBitrate() int {
 			//audioDataSize in bits, check to see if we have value from Xing, if not
 			//then use the approximate value
 			var audioDataSize float64
-			if m.FrameData.XingHeader.Bytes != nil {
-				audioDataSize = float64(*m.FrameData.XingHeader.Bytes * 8)
+			if m.xingHeader.TotalBytes() != nil {
+				audioDataSize = float64(*m.xingHeader.TotalBytes() * 8)
 			} else {
 				audioDataSize = float64(m.approximateAudioSize() * 8)
 			}
@@ -123,29 +157,29 @@ func (m MP3Metadata) AverageBitrate() int {
 		}
 	}
 	//Else we assume constant bitrate
-	return m.FrameHeader.Bitrate * 1000
+	return m.frameHeader.Bitrate() * 1000
 }
 
 func (m MP3Metadata) Comment() string {
-	if m.ID3v2Tags != nil {
-		return m.ID3v2Tags.Comment()
-	} else if m.ID3v1Tags != nil {
-		return m.ID3v1Tags.Comment()
+	if m.id3v2Tags != nil {
+		return m.id3v2Tags.Comment()
+	} else if m.id3v1tags != nil {
+		return m.id3v1tags.Comment()
 	}
 	return ""
 }
 
 func (m MP3Metadata) Composer() string {
-	if m.ID3v2Tags != nil {
-		return m.ID3v2Tags.Composer()
+	if m.id3v2Tags != nil {
+		return m.id3v2Tags.Composer()
 	}
 	//No equivalent value for ID3v1
 	return ""
 }
 
 func (m MP3Metadata) Disc() (int, int) {
-	if m.ID3v2Tags != nil {
-		return m.ID3v2Tags.Disc()
+	if m.id3v2Tags != nil {
+		return m.id3v2Tags.Disc()
 	}
 	//No equivalent value for ID3v1
 	return 0, 0
@@ -179,99 +213,101 @@ var samplesPerFrameMap = map[MPEGVersion]map[MPEGLayer]int{
 }
 
 func (m MP3Metadata) Duration() time.Duration {
-	if m.FrameHeader.SamplingRate <= 0 {
+	if m.frameHeader.SampleRate() <= 0 {
 		return time.Duration(0)
 	}
 	var seconds float64
-	if m.FrameData.XingHeader != nil {
-		if m.FrameData.XingHeader.Frames != nil {
-			spf := samplesPerFrameMap[m.FrameHeader.Version][m.FrameHeader.Layer]
-			seconds = float64(*m.FrameData.XingHeader.Frames*spf) / float64(m.FrameHeader.SamplingRate)
-		} else if m.FrameData.XingHeader.Bytes != nil {
-			//Assume constant bitrate, use accurate byte size
-			if m.FrameHeader.Bitrate <= 0 {
-				return time.Duration(0)
-			}
-			seconds = float64(*m.FrameData.XingHeader.Bytes*8) / float64(m.FrameHeader.Bitrate*1000)
-		}
+	numFrames := m.xingHeader.TotalFrames()
+	//numFrames, framesOk := m.xingHeader["numberOfFrames"].(int)
+	numBytes := m.xingHeader.TotalBytes()
+	//numBytes, bytesOk := m.xingHeader["numberOfBytes"].(int)
+	if numFrames != nil && m.frameHeader.SampleRate() > 0 {
+		seconds = float64(*numFrames*m.frameHeader.SamplesPerFrame()) / float64(m.frameHeader.SampleRate())
+	} else if m.frameHeader.Bitrate() <= 0 {
+		return time.Duration(0)
+	} else if numBytes != nil {
+		seconds = float64(*numBytes*8) / float64(m.frameHeader.Bitrate()*1000)
 	} else {
-		//Assume constant bitrate, use estimated byte size
-		if m.FrameHeader.Bitrate <= 0 {
-			return time.Duration(0)
-		}
-		seconds = float64(m.approximateAudioSize()*8) / float64(m.FrameHeader.Bitrate*1000)
+		seconds = float64(m.approximateAudioSize()*8) / float64(m.frameHeader.Bitrate()*1000)
 	}
 	return time.Duration(seconds * float64(time.Second))
 }
 
 func (m MP3Metadata) Genre() string {
-	if m.ID3v2Tags != nil {
-		return m.ID3v2Tags.Genre()
-	} else if m.ID3v1Tags != nil {
-		return m.ID3v1Tags.Genre()
+	if m.id3v2Tags != nil {
+		return m.id3v2Tags.Genre()
+	} else if m.id3v1tags != nil {
+		return m.id3v1tags.Genre()
 	}
 	return ""
 }
 
 func (m MP3Metadata) FileType() FileType {
-	if m.FrameHeader.Layer == MPEGLayer3 {
+	if m.frameHeader.Layer() == MPEGLayer3 {
 		return MP3
-	} else if m.FrameHeader.Layer == MPEGLayer2 {
+	} else if m.frameHeader.Layer() == MPEGLayer2 {
 		return MP2
-	} else if m.FrameHeader.Layer == MPEGLayer1 {
+	} else if m.frameHeader.Layer() == MPEGLayer1 {
 		return MP1
 	}
 	return UnknownFileType
 }
 
 func (m MP3Metadata) Format() Format {
-	if m.ID3v2Tags != nil {
-		return m.ID3v2Tags.Format()
-	} else if m.ID3v1Tags != nil {
-		return m.ID3v1Tags.Format()
+	if m.id3v2Tags != nil {
+		return m.id3v2Tags.Format()
+	} else if m.id3v1tags != nil {
+		return m.id3v1tags.Format()
 	}
 	return UnknownFormat
 }
 
+func (m MP3Metadata) ID3v2Frames() map[string]interface{} {
+	if m.id3v2Tags != nil {
+		return m.id3v2Tags.frames
+	}
+	return nil
+}
+
 func (m MP3Metadata) Lyrics() string {
-	if m.ID3v2Tags != nil {
-		return m.ID3v2Tags.Lyrics()
+	if m.id3v2Tags != nil {
+		return m.id3v2Tags.Lyrics()
 	}
 	//No equivalent value for ID3v1
 	return ""
 }
 
 func (m MP3Metadata) Picture() *Picture {
-	if m.ID3v2Tags != nil {
-		return m.ID3v2Tags.Picture()
+	if m.id3v2Tags != nil {
+		return m.id3v2Tags.Picture()
 	}
 	//No equivalent value for ID3v1
 	return nil
 }
 
 func (m MP3Metadata) Title() string {
-	if m.ID3v2Tags != nil {
-		return m.ID3v2Tags.Title()
-	} else if m.ID3v1Tags != nil {
-		return m.ID3v1Tags.Title()
+	if m.id3v2Tags != nil {
+		return m.id3v2Tags.Title()
+	} else if m.id3v1tags != nil {
+		return m.id3v1tags.Title()
 	}
 	return ""
 }
 
 func (m MP3Metadata) Track() (int, int) {
-	if m.ID3v2Tags != nil {
-		return m.ID3v2Tags.Track()
-	} else if m.ID3v1Tags != nil {
-		return m.ID3v1Tags.Track()
+	if m.id3v2Tags != nil {
+		return m.id3v2Tags.Track()
+	} else if m.id3v1tags != nil {
+		return m.id3v1tags.Track()
 	}
 	return 0, 0
 }
 
 func (m MP3Metadata) Year() int {
-	if m.ID3v2Tags != nil {
-		return m.ID3v2Tags.Year()
-	} else if m.ID3v1Tags != nil {
-		return m.ID3v1Tags.Year()
+	if m.id3v2Tags != nil {
+		return m.id3v2Tags.Year()
+	} else if m.id3v1tags != nil {
+		return m.id3v1tags.Year()
 	}
 	return 0
 }

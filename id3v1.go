@@ -5,13 +5,11 @@ import (
 	"strconv"
 )
 
-//ID3v1Tags holds metadata from an ID3v1 (or ID3v1.1) tag, which is sometimes
+//id3v1tags holds metadata from an ID3v1 (or ID3v1.1) tag, which is sometimes
 //found at the end of an mp3 file. They may even be found when an ID3v2 tag is
 //included separately in the file.
 //http://id3.org/ID3v1
-type ID3v1Tags struct {
-	Frames map[string]interface{}
-}
+type id3v1tags map[string]interface{}
 
 // id3v1Genres is a list of genres as given in the ID3v1 specification.
 var id3v1Genres = [...]string{
@@ -41,7 +39,7 @@ var id3v1Genres = [...]string{
 
 //ReadID3v1Tags reads ID3v1 tags from the io.ReadSeeker. If there is no ID3v1
 //tag, returns nil.
-func ReadID3v1Tags(r io.ReadSeeker) (*ID3v1Tags, error) {
+func ReadID3v1Tags(r io.ReadSeeker) (id3v1tags, error) {
 	//And ID3v1 tag will always be 128 bytes from the end of the file
 	_, err := r.Seek(-128, io.SeekEnd)
 	if err != nil {
@@ -59,54 +57,74 @@ func ReadID3v1Tags(r io.ReadSeeker) (*ID3v1Tags, error) {
 		return nil, nil
 	}
 
-	f := make(map[string]interface{})
+	m := id3v1tags{}
 
-	f["title"] = getString(b[3:33])
-	f["artist"] = getString(b[33:63])
-	f["album"] = getString(b[63:93])
-	f["year"] = getString(b[93:97])
+	m["title"] = getString(b[3:33])
+	m["artist"] = getString(b[33:63])
+	m["album"] = getString(b[63:93])
+	m["year"] = getString(b[93:97])
 
 	if b[125] == 0 {
-		f["comment"] = getString(b[97:125])
-		f["track"] = int(b[126])
+		m["comment"] = getString(b[97:125])
+		m["track"] = int(b[126])
 	} else {
-		f["comment"] = getString(b[97:127])
-		f["track"] = 0
+		m["comment"] = getString(b[97:127])
+		m["track"] = 0
 	}
 
 	genreID := int(b[127])
 	if genreID < len(id3v1Genres) {
-		f["genre"] = id3v1Genres[genreID]
+		m["genre"] = id3v1Genres[genreID]
 	} else {
-		f["genre"] = ""
+		m["genre"] = ""
 	}
 
-	m := ID3v1Tags{Frames: f}
-	return &m, nil
+	return m, nil
 }
 
-func (ID3v1Tags) Format() Format                { return ID3v1 }
-func (m ID3v1Tags) Raw() map[string]interface{} { return m.Frames }
+func (m id3v1tags) Album() string {
+	s, _ := m["album"].(string)
+	return s
+}
 
-func (m ID3v1Tags) Title() string  { return m.Frames["title"].(string) }
-func (m ID3v1Tags) Album() string  { return m.Frames["album"].(string) }
-func (m ID3v1Tags) Artist() string { return m.Frames["artist"].(string) }
-func (m ID3v1Tags) Genre() string  { return m.Frames["genre"].(string) }
+func (m id3v1tags) Artist() string {
+	s, _ := m["artist"].(string)
+	return s
+}
 
-func (m ID3v1Tags) Year() int {
-	y := m.Frames["year"].(string)
-	n, err := strconv.Atoi(y)
+func (m id3v1tags) Format() Format {
+	return ID3v1
+}
+
+func (m id3v1tags) Raw() map[string]interface{} {
+	return m
+}
+
+func (m id3v1tags) Title() string {
+	s, _ := m["title"].(string)
+	return s
+}
+
+func (m id3v1tags) Genre() string {
+	s, _ := m["genre"].(string)
+	return s
+}
+
+func (m id3v1tags) Year() int {
+	s, _ := m["year"].(string)
+	n, err := strconv.Atoi(s)
 	if err != nil {
 		return 0
 	}
 	return n
 }
 
-func (m ID3v1Tags) Track() (int, int) { return m.Frames["track"].(int), 0 }
+func (m id3v1tags) Track() (int, int) {
+	n, _ := m["track"].(int)
+	return n, 0
+}
 
-/*func (m ID3v1Tags) AlbumArtist() string { return "" }
-func (m ID3v1Tags) Composer() string    { return "" }
-func (ID3v1Tags) Disc() (int, int)      { return 0, 0 }
-func (m ID3v1Tags) Picture() *Picture   { return nil }
-func (m ID3v1Tags) Lyrics() string      { return "" }*/
-func (m ID3v1Tags) Comment() string { return m.Frames["comment"].(string) }
+func (m id3v1tags) Comment() string {
+	s, _ := m["comment"].(string)
+	return s
+}

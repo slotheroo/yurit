@@ -4,6 +4,7 @@
 
 package yurit
 
+/*
 import (
 	"os"
 	"testing"
@@ -124,3 +125,4 @@ func testValue(t *testing.T, expected interface{}, found interface{}) {
 		t.Errorf("expected '%v', found '%v'", expected, found)
 	}
 }
+*/

@@ -4,6 +4,7 @@
 
 package yurit
 
+/*
 import (
 	"fmt"
 	"io"
@@ -15,9 +16,11 @@ import (
 //ID3v2Tags holds metadata from an ID3v2.2, ID3v2.3, or ID3v2.4 tag, which are
 //commonly found in mp3 files.
 type ID3v2Tags struct {
-	Header ID3v2Header
+	header id3v2header
 	Frames map[string]interface{}
 }
+
+type id3v2header map[string]interface{}
 
 //ReadID3v2Tags reads ID3v2 tags from the io.ReadSeeker. If there is no ID3v2
 //tag, returns nil. Method assumes that the reader has been preopositioned to
@@ -35,13 +38,13 @@ func ReadID3v2Tags(r io.ReadSeeker) (*ID3v2Tags, error) {
 	if err != nil {
 		return nil, err
 	}
-	h, offset, err := readID3v2Header(r)
+	h, err := readID3v2Header(r)
 	if err != nil {
 		return nil, err
 	}
 
 	var ur io.Reader = r
-	if h.Unsynchronisation {
+	if h.Unsynchronisation() {
 		ur = &unsynchroniser{Reader: r}
 	}
 
@@ -66,74 +69,91 @@ type ID3v2Header struct {
 
 // readID3v2Header reads the ID3v2 header from the given io.Reader.
 // offset it number of bytes of header that was read
-func readID3v2Header(r io.Reader) (h *ID3v2Header, offset uint, err error) {
-	offset = 10
-	b, err := readBytes(r, offset)
+func readID3v2Header(r io.Reader) (id3v2header, error) {
+	b, err := readBytes(r, 10)
 	if err != nil {
-		return nil, 0, fmt.Errorf("expected to read 10 bytes (ID3v2Header): %v", err)
+		return nil, fmt.Errorf("expected to read 10 bytes (ID3v2Header): %v", err)
 	}
 
 	if string(b[0:3]) != "ID3" {
-		return nil, 0, fmt.Errorf("expected to read \"ID3\"")
+		return nil, fmt.Errorf("expected to read \"ID3\"")
 	}
 
-	b = b[3:]
-	var vers Format
-	switch uint(b[0]) {
-	case 2:
-		vers = ID3v2_2
-	case 3:
-		vers = ID3v2_3
-	case 4:
-		vers = ID3v2_4
-	case 0, 1:
-		fallthrough
-	default:
-		return nil, 0, fmt.Errorf("ID3 version: %v, expected: 2, 3 or 4", uint(b[0]))
+	m := id3v2header{}
+
+	if b[3] > 4 {
+		return nil, fmt.Errorf("Unknown ID3 version: %v. Will not attempt to process.", b[3])
+	}
+	m[VersionKey] = b[3]
+	format := m.Format()
+
+	m[RevisionKey] = b[4]
+	m["unsynchronisationFlag"] = getBit(b[5], 7)
+
+	var extendedHeader bool
+	byte5bit6 := getBit(b[5], 6)
+	if format == ID3v2_2 {
+		m[CompressionKey] = byte5bit6
+	} else {
+		extendedHeader = byte5bit6
+		m["extendedHeaderFlag"] = extendedHeader
 	}
 
-	// NB: We ignore b[1] (the revision) as we don't currently rely on it.
-	h = &ID3v2Header{
-		Version:           vers,
-		Unsynchronisation: getBit(b[2], 7),
-		ExtendedHeader:    getBit(b[2], 6),
-		Experimental:      getBit(b[2], 5),
-		Footer:            getBit(b[2], 4),
-		Size:              uint(get7BitChunkedInt(b[3:7])),
-	}
+	m["experimentalFlag"] = getBit(b[5], 5)
+	m["footerFlag"] = getBit(b[5], 4)
+	m["size"] = get7BitChunkedInt(b[6:10])
 
-	if h.ExtendedHeader {
-		switch vers {
+	if extendedHeader {
+		switch format {
 		case ID3v2_3:
-			b, err := readBytes(r, 4)
+			b, err = readBytes(r, 4)
 			if err != nil {
 				return nil, 0, fmt.Errorf("expected to read 4 bytes (ID3v23 extended header len): %v", err)
 			}
 			// skip header, size is excluding len bytes
 			extendedHeaderSize := uint(getInt(b))
-			_, err = readBytes(r, extendedHeaderSize)
+			b, err = readBytes(r, extendedHeaderSize)
 			if err != nil {
 				return nil, 0, fmt.Errorf("expected to read %d bytes (ID3v23 skip extended header): %v", extendedHeaderSize, err)
 			}
-			offset += extendedHeaderSize
+			m["extendedHeader"] = b
 		case ID3v2_4:
-			b, err := readBytes(r, 4)
+			b, err = readBytes(r, 4)
 			if err != nil {
 				return nil, 0, fmt.Errorf("expected to read 4 bytes (ID3v24 extended header len): %v", err)
 			}
 			// skip header, size is synchsafe int including len bytes
 			extendedHeaderSize := uint(get7BitChunkedInt(b)) - 4
-			_, err = readBytes(r, extendedHeaderSize)
+			b, err = readBytes(r, extendedHeaderSize)
 			if err != nil {
 				return nil, 0, fmt.Errorf("expected to read %d bytes (ID3v24 skip extended header): %v", extendedHeaderSize, err)
 			}
-			offset += extendedHeaderSize
+			m["extendedHeader"] = b
 		default:
 			// nop, only 2.3 and 2.4 should have extended header
 		}
 	}
+	return m, nil
+}
 
-	return h, offset, nil
+func (m id3v2header) Format() Format {
+	v, ok := m[VersionKey].(byte)
+	if !ok {
+		return UnknownFormat
+	}
+	if v == 2 {
+		return ID3v2_2
+	} else if v == 3 {
+		return ID3v2_3
+	} else if v == 4 {
+		return ID3v2_4
+	}
+	return UnknownFormat
+}
+
+func (m id3v2header) Unsynchronisation() bool {
+	v, _ := m["unsynchronisationFlag"].(bool)
+	return v
 }
 
 // id3v2FrameFlags is a type which represents the flags which can be set on an ID3v2 frame.
@@ -234,6 +254,152 @@ func readID3v2_4FrameHeader(r io.Reader) (name string, size uint, headerSize uin
 
 // readID3v2Frames reads ID3v2 frames from the given reader using the ID3v2Header.
 func readID3v2Frames(r io.Reader, offset uint, h *ID3v2Header) (map[string]interface{}, error) {
+	result := make(map[string]interface{})
+
+	for offset < h.Size {
+		var err error
+		var name string
+		var size, headerSize uint
+		var flags *id3v2FrameFlags
+
+		switch h.Version {
+		case ID3v2_2:
+			name, size, headerSize, err = readID3v2_2FrameHeader(r)
+
+		case ID3v2_3:
+			name, size, headerSize, err = readID3v2_3FrameHeader(r)
+			if err != nil {
+				return nil, err
+			}
+			flags, err = readID3v23FrameFlags(r)
+			headerSize += 2
+
+		case ID3v2_4:
+			name, size, headerSize, err = readID3v2_4FrameHeader(r)
+			if err != nil {
+				return nil, err
+			}
+			flags, err = readID3v24FrameFlags(r)
+			headerSize += 2
+		}
+
+		if err != nil {
+			return nil, err
+		}
+
+		// FIXME: Do we still need this?
+		// if size=0, we certainly are in a padding zone. ignore the rest of
+		// the tags
+		if size == 0 {
+			break
+		}
+
+		offset += headerSize + size
+
+		// Avoid corrupted padding (see http://id3.org/Compliance%20Issues).
+		if !validID3Frame(h.Version, name) && offset > h.Size {
+			break
+		}
+
+		if flags != nil {
+			if flags.Compression {
+				_, err = read7BitChunkedUint(r, 4) // read 4
+				if err != nil {
+					return nil, err
+				}
+				size -= 4
+			}
+
+			if flags.Encryption {
+				_, err = readBytes(r, 1) // read 1 byte of encryption method
+				if err != nil {
+					return nil, err
+				}
+				size--
+			}
+		}
+
+		b, err := readBytes(r, size)
+		if err != nil {
+			return nil, err
+		}
+
+		// There can be multiple tag with the same name. Append a number to the
+		// name if there is more than one.
+		rawName := name
+		if _, ok := result[rawName]; ok {
+			for i := 0; ok; i++ {
+				rawName = name + "_" + strconv.Itoa(i)
+				_, ok = result[rawName]
+			}
+		}
+
+		switch {
+		case name == "TXXX" || name == "TXX":
+			t, err := readTextWithDescrFrame(b, false, true) // no lang, but enc
+			if err != nil {
+				return nil, err
+			}
+			result[rawName] = t
+
+		case name[0] == 'T':
+			txt, err := readTFrame(b)
+			if err != nil {
+				return nil, err
+			}
+			result[rawName] = txt
+
+		case name == "UFID" || name == "UFI":
+			t, err := readUFID(b)
+			if err != nil {
+				return nil, err
+			}
+			result[rawName] = t
+
+		case name == "WXXX" || name == "WXX":
+			t, err := readTextWithDescrFrame(b, false, false) // no lang, no enc
+			if err != nil {
+				return nil, err
+			}
+			result[rawName] = t
+
+		case name[0] == 'W':
+			txt, err := readWFrame(b)
+			if err != nil {
+				return nil, err
+			}
+			result[rawName] = txt
+
+		case name == "COMM" || name == "COM" || name == "USLT" || name == "ULT":
+			t, err := readTextWithDescrFrame(b, true, true) // both lang and enc
+			if err != nil {
+				return nil, err
+			}
+			result[rawName] = t
+
+		case name == "APIC":
+			p, err := readAPICFrame(b)
+			if err != nil {
+				return nil, err
+			}
+			result[rawName] = p
+
+		case name == "PIC":
+			p, err := readPICFrame(b)
+			if err != nil {
+				return nil, err
+			}
+			result[rawName] = p
+
+		default:
+			result[rawName] = b
+		}
+	}
+	return result, nil
+}
+
+// readID3v2Frames reads ID3v2 frames from the given reader using the ID3v2Header.
+func readID3v2Frames(r io.Reader, h id3v2header) (map[string]interface{}, error) {
 	result := make(map[string]interface{})
 
 	for offset < h.Size {
@@ -580,3 +746,4 @@ func (m ID3v2Tags) Picture() *Picture {
 	}
 	return v.(*Picture)
 }
+*/

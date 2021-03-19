@@ -22,7 +22,7 @@ func ReadDSFTags(r io.ReadSeeker) (Metadata, error) {
 		return nil, err
 	}
 
-	id3Pointer, err := readUint64LittleEndian(r)
+	id3Pointer, err := readUint64Little(r)
 	if err != nil {
 		return nil, err
 	}
